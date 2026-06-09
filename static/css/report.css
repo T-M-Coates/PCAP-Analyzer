@@ -1,0 +1,420 @@
+/* ── Severity colour variables ─────────────────────────────────── */
+:root {
+  --sev-critical: #dc3545;
+  --sev-high:     #fd7e14;
+  --sev-medium:   #ffc107;
+  --sev-info:     #0dcaf0;
+}
+
+/* ── Header bar ────────────────────────────────────────────────── */
+.report-header {
+  background: linear-gradient(135deg, #1a2234 0%, #243050 100%);
+  border-bottom: 3px solid #dc3545;
+}
+
+/* ── Custom HIGH severity badge (Bootstrap has no orange) ─────── */
+.bg-high {
+  background-color: #fd7e14 !important;
+  color: #000 !important;
+}
+
+/* ── Summary card severity borders ─────────────────────────────── */
+.border-danger { border-color: var(--sev-critical) !important; }
+.border-high   { border-color: var(--sev-high) !important; }
+.border-warning{ border-color: var(--sev-medium) !important; }
+.border-info   { border-color: var(--sev-info) !important; }
+
+/* ── IOC table row: left-border severity indicator ─────────────── */
+.ioc-critical td:first-child { border-left: 4px solid var(--sev-critical); }
+.ioc-high     td:first-child { border-left: 4px solid var(--sev-high); }
+.ioc-medium   td:first-child { border-left: 4px solid var(--sev-medium); }
+.ioc-info     td:first-child { border-left: 4px solid var(--sev-info); }
+
+/* ── IOC hover ─────────────────────────────────────────────────── */
+.table-iocs tbody tr { transition: background 0.1s; }
+.table-iocs tbody tr:hover { background: #f8f9fa; }
+
+/* ── Beaconing CV colour coding ─────────────────────────────────── */
+.cv-high   { color: #dc3545; font-weight: 700; }  /* < 0.05 — machine-perfect, very suspicious */
+.cv-medium { color: #fd7e14; font-weight: 700; }  /* 0.05–0.20 — suspicious */
+.cv-low    { color: #198754; font-weight: 600; }  /* > 0.20 — less suspicious */
+
+/* ── Decoded base64 value highlight ─────────────────────────────── */
+.decoded-value {
+  display: inline-block;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-family: var(--bs-font-monospace);
+  font-size: 0.85em;
+  word-break: break-all;
+}
+
+/* ── HTTP expandable rows ────────────────────────────────────────── */
+.http-main-row { cursor: default; }
+
+.http-detail-row td {
+  border-top: none !important;
+  padding: 0;
+}
+
+.http-detail-row.d-none { display: none !important; }
+
+/* ── Sortable column headers ─────────────────────────────────────── */
+th.sortable:hover {
+  background: #e9ecef;
+  user-select: none;
+}
+
+/* ── Timeline list group ─────────────────────────────────────────── */
+.list-group-item { font-size: 0.9rem; }
+
+/* ── Drop zone (used on index page) ─────────────────────────────── */
+.drop-zone {
+  border: 2px dashed #adb5bd;
+  background: #ffffff;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.drop-zone.drag-over {
+  border-color: #0d6efd;
+  background: #e8f0fe;
+}
+
+/* ── Progress bar text ───────────────────────────────────────────── */
+#progress-label,
+#progress-pct { font-size: 0.85rem; color: #6c757d; }
+
+/* ── Responsive table font ───────────────────────────────────────── */
+@media (max-width: 768px) {
+  .font-monospace { font-size: 0.78rem; }
+  .table-sm td, .table-sm th { padding: 0.3rem 0.4rem; }
+}
+
+/* ── Attack Narrative card ───────────────────────────────────────── */
+
+.narrative-header {
+  background: linear-gradient(135deg, #1a2234 0%, #243050 100%);
+}
+.narrative-header-critical { border-bottom: 2px solid var(--sev-critical); }
+.narrative-header-high     { border-bottom: 2px solid var(--sev-high); }
+.narrative-header-medium   { border-bottom: 2px solid var(--sev-medium); }
+.narrative-header-info     { border-bottom: 2px solid var(--sev-info); }
+
+.narrative-text {
+  font-size: 0.95rem;
+  line-height: 1.65;
+  color: var(--bs-body-color);
+}
+
+/* Key facts chips */
+.narrative-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bs-secondary-bg, #f8f9fa);
+  border: 1px solid var(--bs-border-color, #dee2e6);
+  border-radius: 20px;
+  padding: 3px 12px 3px 8px;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+.narrative-fact-icon  { font-size: 0.9em; }
+.narrative-fact-label { color: #6c757d; }
+.narrative-fact-value { font-weight: 600; }
+
+[data-bs-theme="dark"] .narrative-fact {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.15);
+}
+[data-bs-theme="dark"] .narrative-fact-label { color: #adb5bd; }
+
+/* ── Timeline ────────────────────────────────────────────────────── */
+
+/* Vertical spine */
+.timeline-list {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+  position: relative;
+}
+.timeline-list::before {
+  content: '';
+  position: absolute;
+  left: 88px;           /* aligns with centre of the dot */
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #dee2e6;
+}
+
+/* Each row */
+.timeline-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  padding: 0.55rem 0;
+  position: relative;
+}
+.timeline-item.d-none { display: none !important; }
+
+/* Relative-time stamp */
+.tl-time {
+  width: 72px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 0.78rem;
+  color: #6c757d;
+  padding-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Coloured dot */
+.tl-dot {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  margin: 3px 12px 0 10px;  /* centre on the spine */
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 2px #dee2e6;
+  position: relative;
+  z-index: 1;
+}
+.tl-dot-critical { background: var(--sev-critical); box-shadow: 0 0 0 2px var(--sev-critical); }
+.tl-dot-high     { background: var(--sev-high);     box-shadow: 0 0 0 2px var(--sev-high); }
+.tl-dot-medium   { background: var(--sev-medium);   box-shadow: 0 0 0 2px var(--sev-medium); }
+.tl-dot-info     { background: var(--sev-info);     box-shadow: 0 0 0 2px var(--sev-info); }
+
+/* Event card */
+.tl-card {
+  flex: 1;
+  min-width: 0;
+}
+.tl-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  margin-bottom: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tl-detail {
+  font-size: 0.78rem;
+  color: #6c757d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 680px;
+}
+.tl-source {
+  font-size: 0.72rem;
+  opacity: 0.65;
+  margin-left: 4px;
+}
+
+/* Hover highlight */
+.timeline-item:hover .tl-card { opacity: 0.85; }
+
+/* Toggle button group */
+.tl-toggle .btn { min-width: 110px; }
+
+/* Dark mode tweaks */
+[data-bs-theme="dark"] .timeline-list::before { background: rgba(255,255,255,0.15); }
+[data-bs-theme="dark"] .tl-dot { border-color: var(--bs-body-bg); }
+[data-bs-theme="dark"] .tl-detail { color: #adb5bd; }
+
+/* ── Phase dividers ─────────────────────────────────────────────── */
+
+.timeline-phase-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 0 6px;
+  position: relative;
+  z-index: 2;
+}
+.timeline-phase-divider.d-none { display: none !important; }
+
+.timeline-phase-divider::before,
+.timeline-phase-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #dee2e6;
+}
+/* Override the spine for divider row */
+.timeline-phase-divider .phase-icon {
+  flex-shrink: 0;
+  font-size: 1rem;
+}
+.timeline-phase-divider .phase-label {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6c757d;
+  background: var(--bs-body-bg, #fff);
+  padding: 0 6px;
+}
+
+[data-bs-theme="dark"] .timeline-phase-divider::before,
+[data-bs-theme="dark"] .timeline-phase-divider::after {
+  background: rgba(255,255,255,0.15);
+}
+[data-bs-theme="dark"] .timeline-phase-divider .phase-label {
+  color: #adb5bd;
+  background: var(--bs-body-bg);
+}
+
+/* ── Threat Intel tab — malware family card hover ───────────────── */
+.card.border-danger:hover,
+.card.border-warning:hover {
+  box-shadow: 0 0 0 1px rgba(0,0,0,.08), 0 2px 8px rgba(0,0,0,.12);
+}
+
+/* ── Filter bars ─────────────────────────────────────────────────── */
+
+/* Active state for all filter pill groups (severity, flag, method, section) */
+.ioc-sev-btn.active,
+.dns-flag-btn.active,
+.http-method-btn.active,
+.host-sec-btn.active {
+  background-color: #495057 !important;
+  border-color:     #495057 !important;
+  color: #fff !important;
+}
+
+/* Animate row hide/show */
+#iocTable tbody tr,
+.dns-flagged-row,
+.dns-query-row,
+.http-filterable,
+.host-row {
+  transition: opacity 0.1s;
+}
+
+/* Header clickable severity badges */
+.sev-nav-btn {
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.1s;
+}
+.sev-nav-btn:hover  { filter: brightness(1.15); transform: translateY(-1px); }
+.sev-nav-btn:active { transform: translateY(0); }
+
+/* Global search placeholder colour (white text on dark header bg) */
+#global-search::placeholder { color: rgba(255,255,255,0.55); }
+#global-search:focus {
+  background: rgba(255,255,255,0.2) !important;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
+  outline: none;
+}
+
+/* ── IP profile links ─────────────────────────────────────────────── */
+a.ip-link {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dashed #adb5bd;
+}
+a.ip-link:hover {
+  color: #0d6efd;
+  border-bottom-color: #0d6efd;
+  border-bottom-style: solid;
+}
+[data-bs-theme="dark"] a.ip-link:hover { color: #6ea8fe; border-bottom-color: #6ea8fe; }
+
+/* ── IP Profile Modal ─────────────────────────────────────────────── */
+#ip-modal-body h6 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; }
+#ip-modal-body > div:last-child { border-bottom: none !important; }
+
+/* ── Threat Graph tab ────────────────────────────────────────────── */
+
+/* Active state for node type filter pills */
+.tg-type-btn.active {
+  background-color: #4b5563 !important;
+  border-color:     #6b7280 !important;
+  color: #fff !important;
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.12);
+}
+
+/* Section heading inside detail panel */
+.tg-section-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: #6b7280;
+  font-weight: 700;
+}
+
+/* Connection list */
+.tg-conn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.tg-conn-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.76rem;
+  color: #9ca3af;
+  transition: background 0.1s, color 0.1s;
+}
+.tg-conn-item:hover {
+  background: rgba(255,255,255,0.07);
+  color: #e5e7eb;
+}
+.tg-conn-icon { font-size: 0.72em; flex-shrink: 0; }
+.tg-conn-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--bs-font-monospace);
+}
+
+/* Panel title truncation */
+#tg-panel-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Dark mode overrides ─────────────────────────────────────────── */
+
+/* Decoded base64 highlight — amber on dark */
+[data-bs-theme="dark"] .decoded-value {
+  background: #3d3000;
+  border-color: #856404;
+  color: #ffc107;
+}
+
+/* IOC hover row — subtle on dark backgrounds */
+[data-bs-theme="dark"] .table-iocs tbody tr:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Sortable column hover */
+[data-bs-theme="dark"] th.sortable:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* HTTP detail row background */
+[data-bs-theme="dark"] .http-detail-row td {
+  background: var(--bs-body-bg);
+}
+
+/* HIGH severity badge keeps orange in dark mode */
+[data-bs-theme="dark"] .bg-high {
+  background-color: #fd7e14 !important;
+  color: #000 !important;
+}

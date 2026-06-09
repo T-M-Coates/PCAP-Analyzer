@@ -1,0 +1,13 @@
+Flask>=3.0.0
+dpkt>=1.9.8
+python-dotenv>=1.0.0
+Flask-Executor>=1.0.0
+Werkzeug>=3.0.0
+requests>=2.31.0
+# Enrichment and analysis libraries:
+geoip2>=4.7.0
+ipwhois>=1.2.0
+# AI-assisted analysis:
+anthropic>=0.100.0
+# TLS certificate inspection:
+cryptography>=42.0.0

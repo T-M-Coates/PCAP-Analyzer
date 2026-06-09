@@ -1,0 +1,23 @@
+/* Drop zone */
+.drop-zone {
+  border: 2px dashed #adb5bd;
+  background: #ffffff;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.drop-zone.drag-over {
+  border-color: #0d6efd;
+  background: #e8f0fe;
+}
+
+/* Progress bar text alignment */
+#progress-label,
+#progress-pct {
+  font-size: 0.85rem;
+  color: #6c757d;
+}

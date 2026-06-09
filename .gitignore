@@ -1,0 +1,42 @@
+# ── Runtime directories (created automatically) ───────────────────
+/uploads/
+/data/
+
+# ── Static reference data (keep these) ───────────────────────────
+!/data/ja3_blocklist.json
+!/data/malware_families.json
+
+# ── Sensitive config ──────────────────────────────────────────────
+.env
+
+# ── Python bytecode ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+
+# ── Virtual environment ───────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── PyInstaller build artefacts ───────────────────────────────────
+dist/
+build/
+*.spec
+
+# ── Cached enrichment data (regenerated automatically) ───────────
+/data/vt_cache.json
+/data/whois_cache.json
+/data/feodo_blocklist.txt
+/data/cins_blocklist.txt
+
+# ── MaxMind GeoIP database (user-provided, large binary) ─────────
+/data/GeoLite2-Country.mmdb
+
+# ── IDE / OS artefacts ────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

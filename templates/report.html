@@ -1,0 +1,2234 @@
+<!doctype html>
+<html lang="en" data-bs-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ filename }} — PCAP Analyzer</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/report.css') }}">
+  <!-- Apply saved theme before paint to avoid flash -->
+  <script>(function(){var t=localStorage.getItem('pcap-theme')||'light';document.documentElement.setAttribute('data-bs-theme',t);})();</script>
+</head>
+<body>
+
+{# ── Severity badge macro ──────────────────────────────────────── #}
+{% macro sev_badge(sev) %}
+  {%- if sev == 'CRITICAL' -%}<span class="badge bg-danger">CRITICAL</span>
+  {%- elif sev == 'HIGH' -%}<span class="badge bg-high">HIGH</span>
+  {%- elif sev == 'MEDIUM' -%}<span class="badge bg-warning text-dark">MEDIUM</span>
+  {%- else -%}<span class="badge bg-info text-dark">INFO</span>
+  {%- endif -%}
+{% endmacro %}
+
+{# ── Duration helper ──────────────────────────────────────────── #}
+{% set dur = results.meta.duration_s %}
+{% if dur >= 3600 %}
+  {% set dur_str = "%.0f"|format(dur / 3600) ~ "h " ~ "%.0f"|format((dur % 3600) / 60) ~ "m" %}
+{% elif dur >= 60 %}
+  {% set dur_str = "%.0f"|format(dur / 60) ~ "m " ~ "%.0f"|format(dur % 60) ~ "s" %}
+{% else %}
+  {% set dur_str = dur|string ~ "s" %}
+{% endif %}
+
+{# ── Pre-compute slices used in multiple places ───────────────── #}
+{% set internal_hosts = results.hosts.hosts | selectattr('type', 'equalto', 'internal') | list %}
+{% set external_hosts = results.hosts.hosts | selectattr('type', 'equalto', 'external') | list %}
+{% set top5 = results.hosts.hosts | sort(attribute='packets_sent', reverse=True) %}
+{# ── Pre-compute topology for nav badge ───────────────────────── #}
+{% set _nav_disc     = results.get('discovery') or {} %}
+{% set _nav_topology = _nav_disc.get('topology') or {} %}
+{% set _nav_topo_nodes = _nav_topology.get('nodes') or [] %}
+
+<!-- ════════════════════════════════════════════════════════════
+     HEADER
+     ════════════════════════════════════════════════════════════ -->
+<header class="report-header py-3 px-4">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+    <div>
+      <h5 class="mb-0 fw-bold text-white">{{ filename }}</h5>
+      <small class="text-white-50">
+        {{ results.meta.start_time }}
+        &nbsp;·&nbsp; {{ dur_str }}
+        &nbsp;·&nbsp; {{ "{:,}".format(results.meta.total_packets) }} packets
+        {% if results.meta.internal_domain %}
+          &nbsp;·&nbsp; {{ results.meta.internal_domain }}
+        {% endif %}
+      </small>
+    </div>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <button class="badge bg-danger fs-6 px-3 py-2 border-0 sev-nav-btn" data-sev="CRITICAL" title="Filter IOCs — CRITICAL">{{ results.iocs.critical_count }} CRITICAL</button>
+      <button class="badge bg-high fs-6 px-3 py-2 border-0 sev-nav-btn" data-sev="HIGH" title="Filter IOCs — HIGH">{{ results.iocs.high_count }} HIGH</button>
+      <button class="badge bg-warning text-dark fs-6 px-3 py-2 border-0 sev-nav-btn" data-sev="MEDIUM" title="Filter IOCs — MEDIUM">{{ results.iocs.medium_count }} MEDIUM</button>
+      <button class="badge bg-info text-dark fs-6 px-3 py-2 border-0 sev-nav-btn" data-sev="INFO" title="Filter IOCs — INFO">{{ results.iocs.info_count }} INFO</button>
+      <input type="search" id="global-search" class="form-control form-control-sm ms-2"
+             placeholder="🔍 Search IPs, domains…"
+             style="width:200px;background:rgba(255,255,255,0.12);border-color:rgba(255,255,255,0.3);color:#fff;">
+      <div class="dropdown">
+        <button class="btn btn-outline-light btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+          Export
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li><a class="dropdown-item" href="/export/html/{{ job_id }}">📄 Full Report (HTML)</a></li>
+          <li><a class="dropdown-item" href="/export/iocs/{{ job_id }}">📋 IOCs (TXT)</a></li>
+          <li><a class="dropdown-item" href="/export/csv/{{ job_id }}">📊 IOCs (CSV)</a></li>
+        </ul>
+      </div>
+      <button id="darkModeBtn" class="btn btn-outline-light btn-sm" title="Toggle dark / light mode">☀</button>
+      <a href="/" class="btn btn-outline-light btn-sm">← New analysis</a>
+    </div>
+  </div>
+</header>
+
+<!-- ════════════════════════════════════════════════════════════
+     NAV TABS
+     ════════════════════════════════════════════════════════════ -->
+<div class="container-fluid px-4 pt-3">
+  <ul class="nav nav-tabs" id="mainTabs" role="tablist">
+    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-overview"  type="button">Overview</button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tab-iocs"     id="iocs-tab-btn" type="button">
+      IOCs <span class="badge bg-danger rounded-pill">{{ results.iocs.iocs | length }}</span></button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tab-hosts"    type="button">
+      Hosts <span class="badge bg-secondary rounded-pill">{{ results.hosts.hosts | length }}</span></button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tab-dns"      type="button">
+      DNS{% if results.dns.flagged %} <span class="badge bg-warning text-dark rounded-pill">{{ results.dns.flagged | length }}</span>{% endif %}</button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tab-http"     type="button">
+      HTTP{% if results.http.flagged_requests %} <span class="badge bg-warning text-dark rounded-pill">{{ results.http.flagged_requests | length }}</span>{% endif %}</button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tab-beaconing" type="button">
+      Beaconing{% if results.beaconing.candidates %} <span class="badge bg-warning text-dark rounded-pill">{{ results.beaconing.candidates | length }}</span>{% endif %}</button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tab-smb"      type="button">
+      SMB{% if results.smb.pairs %} <span class="badge bg-secondary rounded-pill">{{ results.smb.pairs | length }}</span>{% endif %}</button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tab-timeline" type="button">
+      Timeline <span class="badge bg-secondary rounded-pill">{{ results.timeline | rejectattr('is_phase_divider', 'defined') | list | length }}</span></button></li>
+    <li class="nav-item">
+      {% set _ti = results.get('threat_intel') or {} %}
+      {% set _ti_count = ((_ti.get('ja3_flags') or []) | length) + ((_ti.get('malware_families') or []) | length) + ((_ti.get('cert_flags') or []) | length) %}
+      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-threat-intel" type="button">
+        Threat Intel{% if _ti_count > 0 %} <span class="badge bg-danger rounded-pill">{{ _ti_count }}</span>{% endif %}
+      </button>
+    </li>
+    <li class="nav-item">
+      {% set _disc = results.get('discovery') or {} %}
+      {% set _mitm_count = (_disc.get('mitm_alerts') or []) | length %}
+      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-network" type="button">
+        Network{% if _mitm_count > 0 %} <span class="badge bg-danger rounded-pill">{{ _mitm_count }}</span>{% endif %}
+      </button>
+    </li>
+    <li class="nav-item">
+      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-topology" type="button">
+        🗺 Topology{% if _nav_topo_nodes %} <span class="badge bg-secondary rounded-pill">{{ _nav_topo_nodes | length }}</span>{% endif %}
+      </button>
+    </li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-threat-graph" id="threat-graph-tab-btn" type="button">🕸 Threat Graph</button></li>
+    <li class="nav-item"><button class="nav-link"        data-bs-toggle="tab" data-bs-target="#tab-history"  type="button">History</button></li>
+  </ul>
+
+  <!-- ════════════════════════════════════════════════════════════
+       TAB PANES
+       ════════════════════════════════════════════════════════════ -->
+  <div class="tab-content pt-4 pb-5" id="mainTabContent">
+
+    <!-- ── OVERVIEW ──────────────────────────────────────────────── -->
+    <div class="tab-pane fade show active" id="tab-overview" role="tabpanel">
+
+      <!-- ── Attack narrative card ──────────────────────────────── -->
+      {% if results.get('narrative') %}
+      {% set narr = results.narrative %}
+      {% set narr_sev = narr.overall_severity | lower %}
+      {% set sev_border = {'critical':'danger','high':'warning','medium':'warning','info':'info'} %}
+      <div class="card shadow-sm mb-4 narrative-card border-start border-4 border-{{ 'danger' if narr_sev == 'critical' else ('warning' if narr_sev == 'high' else ('warning' if narr_sev == 'medium' else 'info')) }}">
+        <div class="card-header d-flex align-items-center justify-content-between gap-2 flex-wrap narrative-header narrative-header-{{ narr_sev }}">
+          <div class="d-flex align-items-center gap-2">
+            <span class="fw-bold text-white fs-6">
+              {%- if narr_sev == 'critical' -%}🔴
+              {%- elif narr_sev == 'high' -%}🟠
+              {%- elif narr_sev == 'medium' -%}🟡
+              {%- else -%}🔵{%- endif -%}
+              {{ narr.attack_type_label }}
+            </span>
+          </div>
+          <div class="d-flex gap-2 align-items-center">
+            {{ sev_badge(narr.overall_severity) }}
+            <span class="badge bg-secondary">{{ narr.confidence }} confidence</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <!-- Narrative sentences -->
+          <p class="narrative-text mb-3">
+            {% for sentence in narr.sentences %}
+              {{ sentence }}{% if not loop.last %} {% endif %}
+            {% endfor %}
+          </p>
+          <!-- Key facts chips -->
+          {% if narr.key_facts %}
+          <div class="d-flex flex-wrap gap-2 pt-2 border-top">
+            {% for fact in narr.key_facts %}
+            <span class="narrative-fact">
+              <span class="narrative-fact-icon">{{ fact.icon }}</span>
+              <span class="narrative-fact-label">{{ fact.label }}:</span>
+              <span class="narrative-fact-value">{{ fact.value }}</span>
+            </span>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- AI Narrative card -->
+      {% if results.get('ai_narrative') %}
+      <div class="card shadow-sm mb-4 border-start border-4 border-info">
+        <div class="card-header d-flex align-items-center justify-content-between narrative-header">
+          <span class="fw-bold text-white">🤖 AI-Assisted Incident Analysis</span>
+          <span class="badge bg-info text-dark">Claude</span>
+        </div>
+        <div class="card-body">
+          <p class="narrative-text mb-0" style="white-space: pre-wrap">{{ results.ai_narrative }}</p>
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- Charts row -->
+      <div class="row g-4 mb-4">
+        <div class="col-lg-4">
+          <div class="card h-100 shadow-sm">
+            <div class="card-header fw-semibold">Protocol breakdown</div>
+            <div class="card-body d-flex align-items-center justify-content-center" style="min-height:220px">
+              <canvas id="protoPieChart"></canvas>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-8">
+          <div class="card h-100 shadow-sm">
+            <div class="card-header fw-semibold">Top 5 source IPs by packets sent</div>
+            <div class="card-body">
+              <canvas id="topSendersBar" style="max-height:220px"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Packet volume over time -->
+      <div class="row g-4 mb-4">
+        <div class="col-12">
+          <div class="card shadow-sm">
+            <div class="card-header fw-semibold">Packet volume over time</div>
+            <div class="card-body" id="packetTimelineBody">
+              <canvas id="packetTimelineChart" style="max-height:180px"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- GeoIP world map -->
+      <div class="row g-4 mb-4">
+        <div class="col-12">
+          <div class="card shadow-sm">
+            <div class="card-header fw-semibold">Geographic distribution of external hosts</div>
+            <div class="card-body p-2" id="geoMapBody" style="min-height:200px">
+              <canvas id="geoMapChart"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Severity summary cards -->
+      <div class="row g-3 mb-4">
+        {% set sev_meta = [
+          ('CRITICAL', 'danger',  results.iocs.critical_count),
+          ('HIGH',     'high',    results.iocs.high_count),
+          ('MEDIUM',   'warning', results.iocs.medium_count),
+          ('INFO',     'info',    results.iocs.info_count)
+        ] %}
+        {% for label, color, count in sev_meta %}
+        <div class="col-sm-6 col-xl-3">
+          <div class="card shadow-sm border-start border-4 border-{{ color }}">
+            <div class="card-body py-3">
+              <div class="d-flex justify-content-between align-items-center">
+                <div>
+                  <div class="text-muted small text-uppercase fw-semibold mb-1">{{ label }}</div>
+                  <div class="h3 fw-bold mb-0">{{ count }}</div>
+                </div>
+                {% set first_ioc = results.iocs.iocs | selectattr('severity', 'equalto', label) | first %}
+                {% if first_ioc %}
+                <div class="text-muted small text-end" style="max-width:55%">
+                  <div class="badge bg-secondary mb-1">{{ first_ioc.type }}</div><br>
+                  <span class="text-truncate d-inline-block" style="max-width:120px" title="{{ first_ioc.value }}">{{ first_ioc.value[:40] }}{% if first_ioc.value | length > 40 %}…{% endif %}</span>
+                </div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <!-- Key events timeline -->
+      <div class="card shadow-sm">
+        <div class="card-header fw-semibold">Key events</div>
+        <ul class="list-group list-group-flush">
+          <li class="list-group-item d-flex gap-2 align-items-start">
+            <span class="badge bg-secondary text-nowrap mt-1">{{ results.meta.start_time }}</span>
+            <span>Capture started — <strong>{{ "{:,}".format(results.meta.total_packets) }}</strong> packets over <strong>{{ dur_str }}</strong>
+              (TCP {{ "{:,}".format(results.meta.tcp_packets) }} · UDP {{ "{:,}".format(results.meta.udp_packets) }} · ICMP {{ "{:,}".format(results.meta.icmp_packets) }})
+            </span>
+          </li>
+          {% for req in results.http.flagged_requests | sort(attribute='ts') %}
+          {% if loop.index <= 6 %}
+          <li class="list-group-item d-flex gap-2 align-items-start">
+            <span class="badge bg-warning text-dark text-nowrap mt-1">{{ req.ts }}</span>
+            <span>
+              Flagged HTTP: <span class="badge bg-secondary">{{ req.method }}</span>
+              <span class="font-monospace small">{{ req.url[:90] }}{% if req.url | length > 90 %}…{% endif %}</span>
+              {% for f in req.flags %}<span class="badge bg-light text-dark border small ms-1">{{ f }}</span>{% endfor %}
+            </span>
+          </li>
+          {% endif %}
+          {% endfor %}
+          {% if results.smb.external_smb_sources %}
+          {% for ip in results.smb.external_smb_sources %}
+          <li class="list-group-item d-flex gap-2 align-items-start">
+            <span class="badge bg-danger text-nowrap mt-1">ALERT</span>
+            <span>External IP <strong>{{ ip }}</strong> initiated SMB (TCP 139/445) — possible ransomware or brute force</span>
+          </li>
+          {% endfor %}
+          {% endif %}
+          {% if results.beaconing.candidates %}
+          {% set bc = results.beaconing.candidates[0] %}
+          <li class="list-group-item d-flex gap-2 align-items-start">
+            <span class="badge bg-{{ 'danger' if bc.cv < 0.05 else 'warning text-dark' }} text-nowrap mt-1">BEACONING</span>
+            <span>
+              <strong>{{ results.beaconing.candidates | length }}</strong> beaconing flows detected.
+              Most regular: <span class="font-monospace small">{{ bc.src }} → {{ bc.dst }}:{{ bc.port }}</span>
+              (interval {{ bc.interval_s }}s, CV={{ bc.cv }})
+            </span>
+          </li>
+          {% endif %}
+          {% if results.hosts.dc_candidate %}
+          <li class="list-group-item d-flex gap-2 align-items-start">
+            <span class="badge bg-primary text-nowrap mt-1">DC</span>
+            <span>Likely Domain Controller identified: <strong>{{ results.hosts.dc_candidate }}</strong></span>
+          </li>
+          {% endif %}
+        </ul>
+      </div>
+    </div>
+    <!-- /OVERVIEW -->
+
+
+    <!-- ── HOSTS ─────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tab-hosts" role="tabpanel">
+
+      <!-- Hosts filter bar -->
+      <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+        <div class="btn-group btn-group-sm" id="hosts-section-filter" role="group">
+          <button class="btn btn-secondary active host-sec-btn" data-show="all">All</button>
+          <button class="btn btn-outline-secondary host-sec-btn" data-show="internal">Internal</button>
+          <button class="btn btn-outline-secondary host-sec-btn" data-show="external">External</button>
+        </div>
+        <input type="search" id="host-search" class="form-control form-control-sm ms-auto"
+               placeholder="Search IP or hostname…" style="width:230px;">
+      </div>
+
+      {% if results.hosts.dc_candidate %}
+      <div class="alert alert-primary shadow-sm d-flex gap-2 align-items-center">
+        <strong>Likely Domain Controller:</strong> <code>{{ results.hosts.dc_candidate }}</code>
+        — highest combined SMB + DNS traffic recipient among internal hosts.
+      </div>
+      {% endif %}
+
+      <!-- Internal hosts -->
+      <div class="card shadow-sm mb-4" id="hosts-internal-card">
+        <div class="card-header fw-semibold">Internal hosts ({{ internal_hosts | length }})</div>
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0 sortable-table">
+            <thead class="table-light">
+              <tr>
+                <th class="sortable">IP</th>
+                <th class="sortable" data-type="num">Pkts Sent</th>
+                <th class="sortable" data-type="num">Pkts Received</th>
+                <th class="sortable" data-type="num">Total</th>
+                <th>Resolved Name</th>
+                <th>Role</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for h in internal_hosts | sort(attribute='packet_count', reverse=True) %}
+              <tr class="host-row" data-ip="{{ h.ip }}" data-name="{{ results.dns.domain_ip_map.get(h.ip, '') | lower }}">
+                <td><a href="#" class="ip-link font-monospace" data-ip="{{ h.ip }}">{{ h.ip }}</a></td>
+                <td>{{ "{:,}".format(h.packets_sent) }}</td>
+                <td>{{ "{:,}".format(h.packets_received) }}</td>
+                <td>{{ "{:,}".format(h.packet_count) }}</td>
+                <td class="text-muted small">{{ results.dns.domain_ip_map.get(h.ip, '') }}</td>
+                <td>
+                  {% if h.role == 'dc_candidate' %}
+                    <span class="badge bg-primary">DC Candidate</span>
+                  {% else %}
+                    <span class="badge bg-light text-dark border">Internal</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- External hosts -->
+      <div class="card shadow-sm" id="hosts-external-card">
+        <div class="card-header fw-semibold">External hosts ({{ external_hosts | length }})</div>
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0 sortable-table">
+            <thead class="table-light">
+              <tr>
+                <th class="sortable">IP</th>
+                <th class="sortable" data-type="num">Pkts Sent</th>
+                <th class="sortable" data-type="num">Pkts Received</th>
+                <th class="sortable" data-type="num">Total</th>
+                <th>Resolved Name</th>
+                <th>Country</th>
+                <th>ASN</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for h in external_hosts[:100] %}
+              <tr class="host-row" data-ip="{{ h.ip }}" data-name="{{ results.dns.domain_ip_map.get(h.ip, '') | lower }}">
+                <td><a href="#" class="ip-link font-monospace" data-ip="{{ h.ip }}">{{ h.ip }}</a></td>
+                <td>{{ "{:,}".format(h.packets_sent) }}</td>
+                <td>{{ "{:,}".format(h.packets_received) }}</td>
+                <td>{{ "{:,}".format(h.packet_count) }}</td>
+                <td class="text-muted small">{{ results.dns.domain_ip_map.get(h.ip, '') }}</td>
+                <td class="small text-nowrap">
+                  {% set cc = h.get('country', '') %}
+                  {% if cc %}{{ flag_emoji(cc) }} {{ cc }}{% else %}<span class="text-muted">—</span>{% endif %}
+                </td>
+                <td class="small text-muted">
+                  {% set asn_desc = h.get('asn_description', '') %}
+                  {% set asn_num  = h.get('asn', '') %}
+                  {% if asn_desc %}AS{{ asn_num }} {{ asn_desc }}
+                  {% elif asn_num %}AS{{ asn_num }}
+                  {% else %}<span class="text-muted">—</span>{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+              {% if external_hosts | length > 100 %}
+              <tr class="table-light text-center">
+                <td colspan="7" class="text-muted small py-2">… {{ external_hosts | length - 100 }} more external hosts not shown</td>
+              </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <!-- /HOSTS -->
+
+
+    <!-- ── DNS ───────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tab-dns" role="tabpanel">
+
+      <!-- DNS filter bar -->
+      <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+        <div class="btn-group btn-group-sm" id="dns-flag-filter" role="group">
+          <button class="btn btn-secondary active dns-flag-btn" data-flag="ALL">All</button>
+          <button class="btn btn-outline-danger  dns-flag-btn" data-flag="SUSP_TLD">Susp TLD</button>
+          <button class="btn btn-outline-warning dns-flag-btn" data-flag="HIGH_FREQ">High Freq</button>
+          <button class="btn btn-outline-warning dns-flag-btn" data-flag="HEX32">DGA/Hex32</button>
+          <button class="btn btn-outline-secondary dns-flag-btn" data-flag="PTR">PTR</button>
+        </div>
+        <input type="search" id="dns-search" class="form-control form-control-sm ms-auto"
+               placeholder="Search domain or IP…" style="width:240px;">
+      </div>
+
+      {% if results.dns.flagged %}
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold text-danger">
+          Flagged domains ({{ results.dns.flagged | length }})
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>Domain</th>
+                <th>Query Count</th>
+                <th>Resolved IPs</th>
+                <th>Flags</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in results.dns.flagged %}
+              <tr class="dns-flagged-row {{ 'table-danger' if ('SUSP_TLD' in f.flags or 'HEX32' in f.flags) else '' }}"
+                  data-flags="{{ f.flags | join(' ') }}"
+                  data-search="{{ f.domain | lower }} {{ f.resolved_ips | join(' ') }}">
+                <td class="font-monospace small">{{ f.domain }}</td>
+                <td>{{ f.query_count }}</td>
+                <td class="small text-muted">{{ f.resolved_ips | join(', ') or '—' }}</td>
+                <td>
+                  {% for flag in f.flags %}
+                  {%- if flag == 'SUSP_TLD' -%}<span class="badge bg-danger me-1">SUSP TLD</span>
+                  {%- elif flag == 'HEX32' -%}<span class="badge bg-danger me-1">HEX32</span>
+                  {%- elif flag == 'HIGH_FREQ' -%}<span class="badge bg-warning text-dark me-1">HIGH FREQ</span>
+                  {%- elif flag == 'PTR' -%}<span class="badge bg-secondary me-1">PTR</span>
+                  {%- else -%}<span class="badge bg-secondary me-1">{{ flag }}</span>
+                  {%- endif -%}
+                  {% endfor %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="card shadow-sm">
+        <div class="card-header fw-semibold">All DNS queries ({{ results.dns.queries | length }})</div>
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0 sortable-table">
+            <thead class="table-light">
+              <tr>
+                <th class="sortable">Domain</th>
+                <th class="sortable" data-type="num">Query Count</th>
+                <th>Resolved IPs</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for q in results.dns.queries[:200] %}
+              <tr class="dns-query-row"
+                  data-search="{{ q.domain | lower }} {{ q.resolved_ips | join(' ') }}">
+                <td class="font-monospace small">{{ q.domain }}</td>
+                <td>{{ q.query_count }}</td>
+                <td class="small text-muted">{{ q.resolved_ips | join(', ') or '—' }}</td>
+              </tr>
+              {% endfor %}
+              {% if results.dns.queries | length > 200 %}
+              <tr class="table-light text-center">
+                <td colspan="3" class="text-muted small py-2">… {{ results.dns.queries | length - 200 }} more queries not shown</td>
+              </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <!-- /DNS -->
+
+
+    <!-- ── HTTP ──────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tab-http" role="tabpanel">
+
+      <!-- HTTP filter bar -->
+      <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+        <div class="btn-group btn-group-sm" id="http-method-filter" role="group">
+          <button class="btn btn-secondary active http-method-btn" data-method="ALL">All</button>
+          <button class="btn btn-outline-secondary http-method-btn" data-method="GET">GET</button>
+          <button class="btn btn-outline-warning   http-method-btn" data-method="POST">POST</button>
+          <button class="btn btn-outline-danger    http-method-btn" data-method="FLAGGED">Flagged</button>
+        </div>
+        <input type="search" id="http-search" class="form-control form-control-sm ms-auto"
+               placeholder="Search host or path…" style="width:240px;">
+      </div>
+
+      <!-- Decoded parameters -->
+      {% if results.http.decoded_params %}
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold text-danger">
+          Decoded URL parameters ({{ results.http.decoded_params | length }})
+          <small class="text-muted fw-normal ms-2">Base64-encoded values found in HTTP query strings</small>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>Param</th>
+                <th>Raw (Base64)</th>
+                <th>UTF-8</th>
+                <th>UTF-16LE</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for dp in results.http.decoded_params %}
+              <tr>
+                <td class="font-monospace small">{{ dp.param }}</td>
+                <td class="font-monospace small text-muted">
+                  {{ dp.raw[:50] }}{% if dp.raw | length > 50 %}…{% endif %}
+                </td>
+                <td class="small">
+                  {% if dp.utf16le %}
+                    {# Skip utf8 if it's just the raw utf16le bytes shown as latin1 garbage #}
+                    <span class="text-muted">see UTF-16LE →</span>
+                  {% elif dp.utf8 %}
+                    <span class="decoded-value">{{ dp.utf8[:120] }}</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td class="small">
+                  {% if dp.utf16le %}
+                    <span class="decoded-value fw-semibold">{{ dp.utf16le[:120] }}</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% if dp.get('url') %}
+              <tr class="table-light">
+                <td colspan="4" class="small text-muted ps-3">
+                  <strong>URL:</strong> <span class="font-monospace">{{ dp.url }}</span>
+                  {% if dp.get('ts') %} &nbsp;·&nbsp; {{ dp.ts }}{% endif %}
+                </td>
+              </tr>
+              {% endif %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- Flagged requests -->
+      {% if results.http.flagged_requests %}
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold text-danger">
+          Flagged requests ({{ results.http.flagged_requests | length }})
+          <small class="text-muted fw-normal ms-2">Click ▼ to expand details</small>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>Time</th><th>Src IP</th><th>Host</th><th>Method</th><th>Path</th><th>Flags</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for req in results.http.flagged_requests %}
+              {% set idx = "f" ~ loop.index0 %}
+              <tr class="http-main-row http-filterable"
+                  data-method="{{ req.method }}"
+                  data-flagged="true"
+                  data-search="{{ req.host | lower }} {{ req.uri | lower }}">
+                <td class="small text-muted text-nowrap">{{ req.ts }}</td>
+                <td class="font-monospace small">{{ req.src }}</td>
+                <td class="small">{{ req.host }}</td>
+                <td>
+                  <span class="badge {{ 'bg-danger' if req.method == 'POST' else 'bg-secondary' }}">{{ req.method }}</span>
+                </td>
+                <td class="small font-monospace text-truncate" style="max-width:220px" title="{{ req.uri }}">{{ req.uri }}</td>
+                <td>
+                  {% for f in req.flags %}
+                  <span class="badge bg-light text-dark border small me-1">{{ f }}</span>
+                  {% endfor %}
+                </td>
+                <td><button class="btn btn-outline-secondary btn-sm py-0 px-2 http-toggle" data-idx="{{ idx }}">▼</button></td>
+              </tr>
+              <tr class="http-detail-row d-none" id="http-detail-{{ idx }}">
+                <td colspan="7" class="p-3 bg-light border-top-0">
+                  <dl class="row mb-0 small">
+                    <dt class="col-sm-2">Full URL</dt>
+                    <dd class="col-sm-10 font-monospace text-break">{{ req.url }}</dd>
+                    {% if req.user_agent %}
+                    <dt class="col-sm-2">User-Agent</dt>
+                    <dd class="col-sm-10">{{ req.user_agent }}</dd>
+                    {% endif %}
+                    {% if req.referer %}
+                    <dt class="col-sm-2">Referer</dt>
+                    <dd class="col-sm-10">{{ req.referer }}</dd>
+                    {% endif %}
+                    {% if req.get('body_snippet') %}
+                    <dt class="col-sm-2">Body</dt>
+                    <dd class="col-sm-10"><pre class="mb-0 small bg-white border rounded p-2">{{ req.body_snippet }}</pre></dd>
+                    {% endif %}
+                  </dl>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- All requests -->
+      <div class="card shadow-sm">
+        <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+          All HTTP requests ({{ results.http.requests | length }})
+          <small class="text-muted fw-normal">Click ▼ to expand</small>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>Time</th><th>Src IP</th><th>Host</th><th>Method</th><th>Path</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for req in results.http.requests[:150] %}
+              {% set idx = "a" ~ loop.index0 %}
+              <tr class="http-main-row http-filterable"
+                  data-method="{{ req.method }}"
+                  data-flagged="false"
+                  data-search="{{ req.host | lower }} {{ req.uri | lower }}">
+                <td class="small text-muted text-nowrap">{{ req.ts }}</td>
+                <td class="font-monospace small">{{ req.src }}</td>
+                <td class="small">{{ req.host }}</td>
+                <td>
+                  <span class="badge {{ 'bg-warning text-dark' if req.method == 'POST' else 'bg-secondary' }}">{{ req.method }}</span>
+                </td>
+                <td class="small font-monospace text-truncate" style="max-width:280px" title="{{ req.uri }}">{{ req.uri }}</td>
+                <td><button class="btn btn-outline-secondary btn-sm py-0 px-2 http-toggle" data-idx="{{ idx }}">▼</button></td>
+              </tr>
+              <tr class="http-detail-row d-none" id="http-detail-{{ idx }}">
+                <td colspan="6" class="p-3 bg-light border-top-0">
+                  <dl class="row mb-0 small">
+                    <dt class="col-sm-2">Full URL</dt>
+                    <dd class="col-sm-10 font-monospace text-break">{{ req.url }}</dd>
+                    {% if req.user_agent %}
+                    <dt class="col-sm-2">User-Agent</dt>
+                    <dd class="col-sm-10">{{ req.user_agent }}</dd>
+                    {% endif %}
+                    {% if req.referer %}
+                    <dt class="col-sm-2">Referer</dt>
+                    <dd class="col-sm-10">{{ req.referer }}</dd>
+                    {% endif %}
+                  </dl>
+                </td>
+              </tr>
+              {% endfor %}
+              {% if results.http.requests | length > 150 %}
+              <tr class="table-light text-center">
+                <td colspan="6" class="text-muted small py-2">… {{ results.http.requests | length - 150 }} more requests not shown</td>
+              </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <!-- /HTTP -->
+
+
+    <!-- ── BEACONING ─────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tab-beaconing" role="tabpanel">
+
+      <div class="alert alert-secondary shadow-sm mb-4">
+        <strong>What is beaconing?</strong>
+        Malware "phones home" to its C2 server on a fixed schedule.
+        The <strong>Coefficient of Variation (CV = stdev ÷ mean interval)</strong> measures how regular the timing is.
+        <span class="cv-high fw-semibold">CV &lt; 0.05</span> is machine-perfect (highly suspicious) ·
+        <span class="cv-medium fw-semibold">CV 0.05–0.20</span> is suspicious ·
+        <span class="cv-low fw-semibold">CV &gt; 0.20</span> may be normal traffic.
+      </div>
+
+      {% if results.beaconing.candidates %}
+      <div class="card shadow-sm">
+        <div class="card-header fw-semibold">
+          Beaconing candidates ({{ results.beaconing.candidates | length }}, sorted most-regular first)
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0 sortable-table">
+            <thead class="table-light">
+              <tr>
+                <th class="sortable">Source</th>
+                <th class="sortable">Destination</th>
+                <th class="sortable" data-type="num">Port</th>
+                <th class="sortable" data-type="num">Avg Interval</th>
+                <th class="sortable" data-type="num">Packets</th>
+                <th class="sortable" data-type="num">CV</th>
+                <th>Regularity</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for c in results.beaconing.candidates[:50] %}
+              <tr>
+                <td><a href="#" class="ip-link font-monospace small" data-ip="{{ c.src }}">{{ c.src }}</a></td>
+                <td><a href="#" class="ip-link font-monospace small" data-ip="{{ c.dst }}">{{ c.dst }}</a></td>
+                <td>{{ c.port }}</td>
+                <td>{{ c.interval_s }}s</td>
+                <td>{{ c.packet_count }}</td>
+                <td>
+                  {% if c.cv < 0.05 %}
+                  <span class="cv-high">{{ c.cv }}</span>
+                  {% elif c.cv < 0.20 %}
+                  <span class="cv-medium">{{ c.cv }}</span>
+                  {% else %}
+                  <span class="cv-low">{{ c.cv }}</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <div class="d-flex align-items-center gap-2">
+                    <div class="progress flex-grow-1" style="height:8px;min-width:60px">
+                      <div class="progress-bar {{ 'bg-danger' if c.cv < 0.05 else ('bg-warning' if c.cv < 0.20 else 'bg-success') }}"
+                           style="width:{{ (c.regularity_score * 100) | int }}%"></div>
+                    </div>
+                    <small class="text-muted">{{ "%.0f"|format(c.regularity_score * 100) }}%</small>
+                  </div>
+                </td>
+              </tr>
+              {% endfor %}
+              {% if results.beaconing.candidates | length > 50 %}
+              <tr class="table-light text-center">
+                <td colspan="7" class="text-muted small py-2">… {{ results.beaconing.candidates | length - 50 }} more candidates not shown</td>
+              </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% else %}
+      <div class="alert alert-success shadow-sm">No beaconing candidates detected.</div>
+      {% endif %}
+    </div>
+    <!-- /BEACONING -->
+
+
+    <!-- ── SMB ───────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tab-smb" role="tabpanel">
+
+      {% if results.smb.external_smb_sources %}
+      <div class="alert alert-danger shadow-sm mb-4">
+        <strong>External IP(s) communicating over SMB!</strong>
+        This is highly suspicious and may indicate ransomware, lateral movement, or brute force from outside.<br>
+        External sources: {% for ip in results.smb.external_smb_sources %}<code>{{ ip }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+      </div>
+      {% endif %}
+
+      {% if results.smb.dc_candidate %}
+      <div class="alert alert-warning shadow-sm mb-4">
+        Likely DC: <strong><code>{{ results.smb.dc_candidate }}</code></strong> — highest SMB traffic recipient among internal hosts.
+      </div>
+      {% endif %}
+
+      {% if results.smb.pairs %}
+      <div class="card shadow-sm">
+        <div class="card-header fw-semibold">SMB traffic pairs — TCP 139 / 445</div>
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0">
+            <thead class="table-light">
+              <tr><th>Source</th><th>Destination</th><th>Port</th><th>Packet Count</th></tr>
+            </thead>
+            <tbody>
+              {% for p in results.smb.pairs %}
+              <tr class="{{ 'table-danger' if p.src in results.smb.external_smb_sources else '' }}">
+                <td><a href="#" class="ip-link font-monospace" data-ip="{{ p.src }}">{{ p.src }}</a></td>
+                <td><a href="#" class="ip-link font-monospace" data-ip="{{ p.dst }}">{{ p.dst }}</a></td>
+                <td>{{ p.port }}</td>
+                <td>{{ "{:,}".format(p.packet_count) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% else %}
+      <div class="alert alert-success shadow-sm">No SMB traffic detected.</div>
+      {% endif %}
+    </div>
+    <!-- /SMB -->
+
+
+    <!-- ── TIMELINE ────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tab-timeline" role="tabpanel">
+
+      {# ── Severity dot macro ──────────────────────────────────── #}
+      {% macro tl_dot(sev) %}
+        <span class="tl-dot tl-dot-{{ sev | lower }}"></span>
+      {% endmacro %}
+
+      <!-- Toggle bar -->
+      <div class="d-flex align-items-center justify-content-between mb-3 gap-3 flex-wrap">
+        <div class="tl-toggle btn-group" role="group" aria-label="Timeline filter">
+          <button id="tlBtnSuspicious" type="button" class="btn btn-primary btn-sm">
+            🚨 Suspicious only
+          </button>
+          <button id="tlBtnAll" type="button" class="btn btn-outline-secondary btn-sm">
+            📋 All events
+          </button>
+        </div>
+        <small class="text-muted">
+          {{ results.timeline | selectattr('suspicious') | list | length }} suspicious ·
+          {{ results.timeline | length }} total events
+        </small>
+      </div>
+
+      <!-- Timeline list -->
+      <div class="card shadow-sm">
+        <div class="card-body p-3">
+          {% if results.timeline %}
+          <ul class="timeline-list">
+            {% for ev in results.timeline %}
+            {% if ev.get('is_phase_divider') %}
+            <li class="timeline-phase-divider"
+                data-suspicious="{{ 'true' if ev.suspicious else 'false' }}">
+              <span class="phase-icon">{{ ev.phase_icon }}</span>
+              <span class="phase-label">{{ ev.phase }}</span>
+            </li>
+            {% else %}
+            <li class="timeline-item"
+                data-suspicious="{{ 'true' if ev.suspicious else 'false' }}">
+              <span class="tl-time">{{ ev.ts_rel_str }}</span>
+              {{ tl_dot(ev.severity) }}
+              <div class="tl-card">
+                <div class="tl-title">
+                  {{ sev_badge(ev.severity) }}
+                  {{ ev.title }}
+                  <span class="tl-source badge bg-light text-dark border">{{ ev.source }}</span>
+                </div>
+                {% if ev.detail %}
+                <div class="tl-detail font-monospace">{{ ev.detail }}</div>
+                {% endif %}
+              </div>
+            </li>
+            {% endif %}
+            {% endfor %}
+          </ul>
+          <div id="tlEmpty" class="text-center text-muted py-4 d-none">
+            No suspicious events found — switch to <strong>All events</strong> to see full traffic.
+          </div>
+          {% else %}
+          <div class="alert alert-success mb-0">No timeline events to display.</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Absolute timestamp reference -->
+      <div class="mt-2 text-muted small text-end">
+        All times relative to capture start: <strong>{{ results.meta.start_time }}</strong>
+      </div>
+    </div>
+    <!-- /TIMELINE -->
+
+
+    <!-- ── IOCs ──────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tab-iocs" role="tabpanel">
+
+      {% if results.iocs.iocs %}
+      <div class="ioc-filter-bar d-flex flex-wrap align-items-center gap-2 mb-3">
+        <div class="btn-group btn-group-sm" id="ioc-sev-filter" role="group" aria-label="Filter by severity">
+          <button class="btn btn-secondary ioc-sev-btn active" data-sev="ALL">All ({{ results.iocs.iocs | length }})</button>
+          <button class="btn btn-outline-danger  ioc-sev-btn" data-sev="CRITICAL">Critical ({{ results.iocs.critical_count }})</button>
+          <button class="btn btn-outline-warning ioc-sev-btn" data-sev="HIGH">High ({{ results.iocs.high_count }})</button>
+          <button class="btn btn-outline-warning ioc-sev-btn" data-sev="MEDIUM">Medium ({{ results.iocs.medium_count }})</button>
+          <button class="btn btn-outline-info    ioc-sev-btn" data-sev="INFO">Info ({{ results.iocs.info_count }})</button>
+        </div>
+        <select class="form-select form-select-sm" id="ioc-type-filter" style="width:auto;min-width:115px">
+          <option value="">All types</option>
+          <option>IP</option>
+          <option>DOMAIN</option>
+          <option>URL</option>
+          <option>HASH</option>
+          <option>UA</option>
+        </select>
+        <input type="search" id="ioc-search" class="form-control form-control-sm"
+               placeholder="Search value or description…" style="width:220px;">
+        <div class="ms-auto d-flex gap-2">
+          <button class="btn btn-outline-secondary btn-sm" id="copyIocsBtn">Copy</button>
+          <button class="btn btn-outline-secondary btn-sm" id="exportCsvBtn">Export CSV</button>
+        </div>
+      </div>
+
+      <div class="card shadow-sm">
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0 table-iocs" id="iocTable">
+            <thead class="table-light">
+              <tr>
+                <th style="width:100px">Severity</th>
+                <th style="width:70px">Type</th>
+                <th>Value</th>
+                <th>Description</th>
+                <th style="width:70px">Source</th>
+                <th style="width:140px">VT / C2</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for ioc in results.iocs.iocs %}
+              {% set enr = ioc.get('enrichment') or {} %}
+              <tr class="ioc-row ioc-{{ ioc.severity | lower }}"
+                  data-sev="{{ ioc.severity }}"
+                  data-type="{{ ioc.type }}"
+                  data-search="{{ (ioc.value ~ ' ' ~ ioc.description) | lower }}">
+                <td class="text-nowrap align-middle">{{ sev_badge(ioc.severity) }}</td>
+                <td class="small text-muted align-middle text-nowrap">{{ ioc.type }}</td>
+                <td class="font-monospace small align-middle ioc-value text-break">
+                  {{ ioc.value }}
+                  {%- if enr.get('country') %}
+                    <span class="ms-1 text-muted" title="{{ enr.country }}">{{ flag_emoji(enr.country) }}</span>
+                  {%- endif %}
+                </td>
+                <td class="small align-middle">{{ ioc.description }}</td>
+                <td class="small text-muted align-middle">{{ ioc.source_module }}</td>
+                <td class="align-middle">
+                  {%- if enr.get('is_known_c2') -%}
+                    <span class="badge bg-danger d-block mb-1">KNOWN C2</span>
+                  {%- endif -%}
+                  {%- if enr.get('vt_total', 0) > 0 -%}
+                    {%- if enr.get('vt_malicious', 0) > 0 -%}
+                      <span class="badge bg-danger" title="VirusTotal: {{ enr.vt_malicious }} malicious, {{ enr.get('vt_suspicious',0) }} suspicious">
+                        {{ enr.vt_malicious }}/{{ enr.vt_total }} engines
+                      </span>
+                    {%- else -%}
+                      <span class="badge bg-secondary" title="VirusTotal: clean">
+                        0/{{ enr.vt_total }}
+                      </span>
+                    {%- endif -%}
+                  {%- elif not enr -%}
+                    <span class="text-muted small">—</span>
+                  {%- endif -%}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% else %}
+      <div class="alert alert-success shadow-sm">No IOCs detected.</div>
+      {% endif %}
+    </div>
+    <!-- /IOCs -->
+
+
+    <!-- ── THREAT INTEL ──────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tab-threat-intel" role="tabpanel">
+      {% set ti = results.get('threat_intel') or {} %}
+      {% set ti_ja3      = ti.get('ja3_flags')       or [] %}
+      {% set ti_families = ti.get('malware_families') or [] %}
+      {% set ti_certs    = ti.get('cert_flags')       or [] %}
+      {% set ti_files    = ti.get('extracted_files')  or [] %}
+
+      {% if not ti_ja3 and not ti_families and not ti_certs and not ti_files %}
+      <div class="alert alert-success shadow-sm">No threat intelligence indicators detected in this capture.</div>
+      {% endif %}
+
+      <!-- ── JA3 Fingerprints ─────────────────────────────────────── -->
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold d-flex align-items-center gap-2 {{ 'text-danger' if ti_ja3 else '' }}">
+          JA3 TLS Fingerprints
+          {% if ti_ja3 %}<span class="badge bg-danger">{{ ti_ja3 | length }}</span>{% endif %}
+          <small class="text-muted fw-normal ms-1">Known-malicious TLS client fingerprints detected in traffic</small>
+        </div>
+        {% if ti_ja3 %}
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0">
+            <thead class="table-light">
+              <tr><th>JA3 Hash</th><th>Family</th><th>Label</th><th>Flow</th></tr>
+            </thead>
+            <tbody>
+              {% for j in ti_ja3 %}
+              <tr class="table-danger">
+                <td class="font-monospace small">{{ j.hash }}</td>
+                <td><span class="badge bg-danger">{{ j.family }}</span></td>
+                <td class="small">{{ j.label }}</td>
+                <td class="font-monospace small text-muted">{{ j.src }} -&gt; {{ j.dst }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="card-body text-muted small">No known-malicious JA3 hashes detected.</div>
+        {% endif %}
+      </div>
+
+      <!-- ── Malware Family Indicators ────────────────────────────── -->
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold d-flex align-items-center gap-2 {{ 'text-danger' if ti_families else '' }}">
+          Malware Family Indicators
+          {% if ti_families %}<span class="badge bg-warning text-dark">{{ ti_families | length }}</span>{% endif %}
+          <small class="text-muted fw-normal ms-1">Behavioral pattern matching against known malware families</small>
+        </div>
+        {% if ti_families %}
+        <div class="card-body">
+          <div class="row g-3">
+            {% for m in ti_families %}
+            {% set conf_cls = 'danger' if m.confidence == 'HIGH' else ('warning' if m.confidence == 'MEDIUM' else 'secondary') %}
+            <div class="col-md-6 col-xl-4">
+              <div class="card border-{{ conf_cls }} h-100">
+                <div class="card-header py-2 d-flex justify-content-between align-items-center">
+                  <strong class="small">{{ m.family }}</strong>
+                  <div class="d-flex gap-1">
+                    <span class="badge {{ 'bg-danger' if m.confidence == 'HIGH' else ('bg-warning text-dark' if m.confidence == 'MEDIUM' else 'bg-secondary') }}">{{ m.confidence }}</span>
+                    <span class="badge bg-light text-dark border">score {{ m.score }}</span>
+                  </div>
+                </div>
+                <ul class="list-group list-group-flush">
+                  {% for ind in m.indicators %}
+                  <li class="list-group-item py-1 small">{{ ind }}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% else %}
+        <div class="card-body text-muted small">No malware family patterns matched.</div>
+        {% endif %}
+      </div>
+
+      <!-- ── Suspicious TLS Certificates ─────────────────────────── -->
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold d-flex align-items-center gap-2 {{ 'text-danger' if ti_certs else '' }}">
+          Suspicious TLS Certificates
+          {% if ti_certs %}<span class="badge bg-warning text-dark">{{ ti_certs | length }}</span>{% endif %}
+          <small class="text-muted fw-normal ms-1">Self-signed, expired, or otherwise anomalous certificates</small>
+        </div>
+        {% if ti_certs %}
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0">
+            <thead class="table-light">
+              <tr><th>Common Name</th><th>Issuer</th><th>Valid Until</th><th>Days</th><th>Flags</th><th>Flow</th></tr>
+            </thead>
+            <tbody>
+              {% for c in ti_certs %}
+              <tr>
+                <td class="font-monospace small">{{ c.cn or '(none)' }}</td>
+                <td class="small text-muted">{{ c.issuer_cn or '—' }}</td>
+                <td class="small text-nowrap">{{ c.not_after[:10] if c.not_after else '—' }}</td>
+                <td class="small">{{ c.validity_days }}</td>
+                <td>
+                  {% for flag in c.flags %}
+                  <span class="badge {{ 'bg-danger' if flag in ('EXPIRED', 'SELF_SIGNED', 'IP_ADDRESS_CN') else 'bg-warning text-dark' }} me-1 small">{{ flag }}</span>
+                  {% endfor %}
+                </td>
+                <td class="font-monospace small text-muted">{{ c.src }} -&gt; {{ c.dst }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="card-body text-muted small">No suspicious TLS certificates detected.</div>
+        {% endif %}
+      </div>
+
+      <!-- ── HTTP File Transfers ───────────────────────────────────── -->
+      <div class="card shadow-sm">
+        <div class="card-header fw-semibold d-flex align-items-center gap-2">
+          HTTP File Transfers
+          {% if ti_files %}<span class="badge bg-secondary">{{ ti_files | length }}</span>{% endif %}
+          <small class="text-muted fw-normal ms-1">Files extracted from unencrypted HTTP — hash for VirusTotal lookup</small>
+        </div>
+        {% if ti_files %}
+        <div class="table-responsive">
+          <table class="table table-hover table-sm mb-0">
+            <thead class="table-light">
+              <tr><th>Filename</th><th>Content-Type</th><th>Size</th><th>SHA-256</th><th>Flow</th></tr>
+            </thead>
+            <tbody>
+              {% for fi in ti_files %}
+              <tr>
+                <td class="font-monospace small">{{ fi.filename }}</td>
+                <td class="small text-muted">{{ fi.content_type }}</td>
+                <td class="small text-nowrap">
+                  {{ "{:,}".format(fi.size) }} B
+                  {% if fi.truncated %}<span class="badge bg-secondary ms-1">truncated</span>{% endif %}
+                </td>
+                <td class="font-monospace small">
+                  <span title="{{ fi.sha256 }}">{{ fi.sha256[:16] }}…</span>
+                  <button class="btn btn-outline-secondary btn-sm py-0 px-1 ms-1"
+                          onclick="navigator.clipboard.writeText('{{ fi.sha256 }}')"
+                          title="Copy full SHA-256">📋</button>
+                </td>
+                <td class="font-monospace small text-muted">{{ fi.src }} -&gt; {{ fi.dst }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="card-body text-muted small">No file transfers detected in cleartext HTTP traffic.</div>
+        {% endif %}
+      </div>
+    </div>
+    <!-- /THREAT INTEL -->
+
+
+    <!-- ── NETWORK INFRASTRUCTURE & MITM ────────────────────────── -->
+    <div class="tab-pane fade" id="tab-network" role="tabpanel">
+      {% set disc = results.get('discovery') or {} %}
+      {% set topology = disc.get('topology') or {} %}
+      {% set topo_nodes = topology.get('nodes') or [] %}
+      {% set topo_edges = topology.get('edges') or [] %}
+      {% set shadow_iot = topology.get('shadow_iot') or [] %}
+      {% set devices = disc.get('devices') or [] %}
+
+      {# Topology graph moved to dedicated 🗺 Topology tab — see #tab-topology #}
+
+      {# ── Shadow IoT Alert ─────────────────────────────────────── #}
+      {% if shadow_iot %}
+      <div class="card shadow-sm mb-4 border-start border-4 border-warning">
+        <div class="card-header fw-semibold" style="background:#78350f;color:#fde68a">
+          🔴 Shadow IoT — Unexpected External Connections
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0">
+            <thead><tr><th>IoT / Printer IP</th><th>External Host Contacted</th><th>Risk</th></tr></thead>
+            <tbody>
+              {% for c in shadow_iot %}
+              <tr class="table-warning">
+                <td><code>{{ c.ip }}</code></td>
+                <td class="text-break">{{ c.host }}</td>
+                <td><span class="badge bg-warning text-dark">HIGH</span></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <div class="p-2 small text-muted border-top">
+            IoT and printer devices communicating with external internet hosts is a Shadow IoT risk — these devices may be compromised or phoning home.
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {# ── Device Inventory ─────────────────────────────────────── #}
+      {% if devices %}
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold">📋 Device Inventory</div>
+        <div class="card-body p-0">
+          <div style="max-height:320px;overflow-y:auto">
+            <table class="table table-sm table-hover mb-0">
+              <thead class="sticky-top table-dark">
+                <tr>
+                  <th>IP</th><th>MAC</th><th>Type</th><th>Label</th><th>Manufacturer</th>
+                  <th>Fingerprinted Via</th><th>Services</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for dev in devices %}
+                {% set type_badge = {
+                  'gateway':  'success',
+                  'computer': 'primary',
+                  'mobile':   'warning',
+                  'iot':      'info',
+                  'printer':  'purple',
+                  'server':   'teal',
+                  'switch':   'secondary',
+                  'unknown':  'dark'
+                } %}
+                <tr class="{{ 'table-danger' if dev.mac_changes and dev.mac_changes > 0 else '' }}">
+                  <td><code>{{ dev.ip }}</code></td>
+                  <td><code class="small">{{ dev.mac }}</code></td>
+                  <td>
+                    <span class="badge bg-{{ type_badge.get(dev.device_type, 'secondary') }}">
+                      {{ dev.device_type }}
+                    </span>
+                  </td>
+                  <td class="small">{{ dev.device_label }}</td>
+                  <td class="small text-muted">{{ dev.manufacturer or '—' }}</td>
+                  <td class="small text-muted">{{ dev.fingerprint_source or '—' }}</td>
+                  <td class="small text-muted">
+                    {% if dev.mdns %}{{ dev.mdns[:2] | join(', ') }}{% endif %}
+                    {% if dev.is_dns_server %}<span class="badge ms-1" style="background:#00bcd4;color:#000">DNS</span>{% endif %}
+                    {% if dev.is_dhcp_server %}<span class="badge ms-1" style="background:#ff9500;color:#000">DHCP</span>{% endif %}
+                    {% if dev.ssdp %}<span class="badge bg-info text-dark ms-1">SSDP</span>{% endif %}
+                    {% if dev.lldp %}<span class="badge bg-secondary ms-1">LLDP</span>{% endif %}
+                    {% if dev.ua %}<span class="badge bg-primary ms-1" title="{{ dev.ua[:80] }}">UA</span>{% endif %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {# ── MITM Alerts ─────────────────────────────────────────── #}
+      {% if disc.get('mitm_alerts') %}
+      <div class="card shadow-sm mb-4 border-start border-4 border-danger">
+        <div class="card-header fw-semibold text-white" style="background:#b91c1c">
+          ⚠ MITM / ARP Spoofing Alerts
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0">
+            <thead><tr>
+              <th>Severity</th><th>Type</th><th>Detail</th><th>Timestamp</th>
+            </tr></thead>
+            <tbody>
+              {% for alert in disc.mitm_alerts %}
+              <tr>
+                <td>{{ sev_badge(alert.severity) }}</td>
+                <td><code>{{ alert.type }}</code></td>
+                <td class="text-break">{{ alert.detail }}</td>
+                <td class="text-nowrap text-muted small">{{ alert.ts or '—' }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="row g-4 mb-4">
+
+        {# ── Gateway ──────────────────────────────────────────────── #}
+        <div class="col-lg-4">
+          <div class="card h-100 shadow-sm">
+            <div class="card-header fw-semibold">🌐 Gateway</div>
+            <div class="card-body">
+              {% if disc.get('gateway') %}
+              {% set gw = disc.gateway %}
+              <dl class="mb-0">
+                <dt>IP Address</dt>
+                <dd><code>{{ gw.ip }}</code></dd>
+                <dt>MAC Address</dt>
+                <dd><code>{{ gw.mac }}</code></dd>
+                {% if gw.manufacturer %}
+                <dt>Manufacturer</dt>
+                <dd>{{ gw.manufacturer }}</dd>
+                {% endif %}
+              </dl>
+              {% else %}
+              <p class="text-muted mb-0">No gateway identified (no ARP traffic or gateway uses non-.1/.254 address).</p>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+
+        {# ── ARP Summary ──────────────────────────────────────────── #}
+        <div class="col-lg-8">
+          <div class="card h-100 shadow-sm">
+            <div class="card-header fw-semibold">📋 ARP Table (top entries)</div>
+            <div class="card-body p-0">
+              {% if disc.get('arp_table') %}
+              <div style="max-height:280px;overflow-y:auto">
+                <table class="table table-sm table-hover mb-0">
+                  <thead class="sticky-top table-light">
+                    <tr><th>IP</th><th>MAC</th><th>Manufacturer</th><th>ARP Pkts</th><th>MAC Changes</th></tr>
+                  </thead>
+                  <tbody>
+                    {% for row in disc.arp_table %}
+                    <tr class="{{ 'table-danger' if row.mac_changes > 0 else '' }}">
+                      <td><code>{{ row.ip }}</code></td>
+                      <td><code>{{ row.mac }}</code></td>
+                      <td>{{ row.manufacturer or '—' }}</td>
+                      <td>{{ row.arp_count }}</td>
+                      <td>
+                        {% if row.mac_changes > 0 %}
+                          <span class="badge bg-danger">{{ row.mac_changes }} flip{{ 's' if row.mac_changes != 1 else '' }}</span>
+                        {% else %}—{% endif %}
+                      </td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% else %}
+              <div class="p-3 text-muted">No ARP traffic observed.</div>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {# ── MAC Flips detail ─────────────────────────────────────── #}
+      {% if disc.get('mac_flips') %}
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold">🔴 ARP Spoofing — MAC Address Flips</div>
+        <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0">
+            <thead><tr><th>IP</th><th>Old MAC</th><th>New MAC</th><th>When</th></tr></thead>
+            <tbody>
+              {% for flip in disc.mac_flips %}
+              <tr class="table-danger">
+                <td><code>{{ flip.ip }}</code></td>
+                <td><code>{{ flip.old_mac }}</code></td>
+                <td><code>{{ flip.new_mac }}</code></td>
+                <td class="text-muted small">{{ flip.ts }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      {# ── Gratuitous ARPs ──────────────────────────────────────── #}
+      {% if disc.get('grat_arps') %}
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold">⚡ Gratuitous ARPs (unsolicited replies)</div>
+        <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0">
+            <thead><tr><th>IP</th><th>MAC</th><th>Timestamp</th></tr></thead>
+            <tbody>
+              {% for g in disc.grat_arps %}
+              <tr class="table-warning">
+                <td><code>{{ g.ip }}</code></td>
+                <td><code>{{ g.mac }}</code></td>
+                <td class="text-muted small">{{ g.ts }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <div class="p-2 small text-muted border-top">
+            Gratuitous ARPs can be legitimate (some devices send them on boot) but are also the primary mechanism for ARP poisoning attacks.
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {# ── DNS Conflicts ────────────────────────────────────────── #}
+      {% if disc.get('dns_races') %}
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold">🎯 DNS Conflicts (possible DNS spoofing)</div>
+        <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0">
+            <thead><tr><th>Domain</th><th>DNS Server</th><th>Resolved IPs</th></tr></thead>
+            <tbody>
+              {% for race in disc.dns_races %}
+                {% for server, ips in race.servers.items() %}
+                <tr class="{{ 'table-warning' if loop.index == 1 else '' }}">
+                  {% if loop.index == 1 %}<td rowspan="{{ race.servers | length }}" class="align-middle"><code>{{ race.domain }}</code></td>{% endif %}
+                  <td><code>{{ server }}</code></td>
+                  <td>{{ ips | join(', ') }}</td>
+                </tr>
+                {% endfor %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+
+      {# ── Name Service Spoofing ────────────────────────────────── #}
+      {% if disc.get('name_spoofers') %}
+      <div class="card shadow-sm mb-4">
+        <div class="card-header fw-semibold">📡 LLMNR/mDNS/NBNS Spoofing Suspects</div>
+        <div class="card-body p-0">
+          <table class="table table-sm table-hover mb-0">
+            <thead><tr><th>IP</th><th>Names Answered</th><th>Sample Names</th></tr></thead>
+            <tbody>
+              {% for s in disc.name_spoofers %}
+              <tr class="table-warning">
+                <td><code>{{ s.ip }}</code></td>
+                <td><span class="badge bg-warning text-dark">{{ s.name_count }}</span></td>
+                <td class="small text-muted">{{ s.sample_names | join(', ') }}{% if s.name_count > 5 %} …{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <div class="p-2 small text-muted border-top">
+            Responder and similar tools answer all LLMNR/mDNS/NBNS queries to intercept credentials. A legitimate device rarely responds to many unique names.
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {# ── Empty state ──────────────────────────────────────────── #}
+      {% if not disc.get('mitm_alerts') and not disc.get('arp_table') %}
+      <div class="alert alert-info">
+        No ARP or name-resolution traffic was captured. Gateway and MITM detection require Layer-2 data.
+      </div>
+      {% endif %}
+
+    </div>
+
+    <!-- ── TOPOLOGY ───────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tab-topology" role="tabpanel">
+      {% set _t_disc     = results.get('discovery') or {} %}
+      {% set _t_topology = _t_disc.get('topology') or {} %}
+      {% set _t_nodes    = _t_topology.get('nodes') or [] %}
+      {% set _t_edges    = _t_topology.get('edges') or [] %}
+      {% set _t_shadow   = _t_topology.get('shadow_iot') or [] %}
+      {% set _t_summary  = _t_topology.get('summary') or {} %}
+
+      {% if _t_nodes %}
+      <div class="card shadow-sm mb-0" style="border-radius:.5rem;overflow:hidden">
+
+        {# ── Stats bar ──────────────────────────────────────────── #}
+        <div class="d-flex flex-wrap align-items-center gap-3 px-3 py-2 border-bottom small fw-semibold" style="background:#0d1117;color:#94a3b8">
+          <span>🗺 Network Topology</span>
+          <span class="text-muted">│</span>
+          {% if _t_summary.get('critical_count', 0) > 0 %}
+          <span>● <span style="color:#ef4444">{{ _t_summary.critical_count }}</span> critical</span>
+          {% endif %}
+          {% if _t_summary.get('shadow_iot_count', 0) > 0 %}
+          <span>● <span style="color:#f97316">{{ _t_summary.shadow_iot_count }}</span> shadow IoT</span>
+          {% endif %}
+          <span>● <span style="color:#22c55e">{{ _t_summary.get('gateway_count', 0) }}</span> gateway</span>
+          <span class="text-muted">│</span>
+          <span><b>{{ _t_summary.get('total_internal', 0) }}</b> hosts</span>
+          <span><b>{{ _t_summary.get('subnet_count', 0) }}</b> subnets</span>
+          <span class="ms-auto text-muted" style="font-weight:400;opacity:.7">Size = traffic volume &nbsp;│&nbsp; 💡 Hover · Double-click → VirusTotal</span>
+        </div>
+
+        {# ── Legend ─────────────────────────────────────────────── #}
+        <div class="d-flex flex-wrap align-items-center gap-1 px-3 py-2 border-bottom" style="background:#0f1117">
+          <span class="badge" style="background:#198754">🌐 Gateway</span>
+          <span class="badge" style="background:#0d6efd">💻 Computer</span>
+          <span class="badge" style="background:#fd7e14">📱 Mobile</span>
+          <span class="badge" style="background:#0dcaf0;color:#000">📡 IoT</span>
+          <span class="badge" style="background:#6f42c1">🖨 Printer</span>
+          <span class="badge" style="background:#20c997;color:#000">🖥 Server</span>
+          <span class="badge" style="background:#6c757d">🔀 Switch</span>
+          <span class="badge" style="background:#1e293b;border:1px solid #475569;color:#94a3b8">🌍 External</span>
+          <span class="badge" style="background:#0f1117;border:2px solid #ef4444;color:#ef4444">⚠ ARP Spoof</span>
+          <span class="badge" style="background:#0f1117;border:2px solid #f97316;color:#f97316">Shadow IoT</span>
+          <span class="badge" style="background:#0f1117;border:2px solid #00bcd4;color:#00bcd4">DNS</span>
+          <span class="badge" style="background:#0f1117;border:2px solid #ff9500;color:#ff9500">DHCP</span>
+          <span class="badge" style="background:#0f1117;border:2px solid #a855f7;color:#a855f7">DC</span>
+        </div>
+
+        {# ── Toolbar ────────────────────────────────────────────── #}
+        <div class="d-flex flex-wrap align-items-center gap-2 px-3 py-2 border-bottom" style="background:#161b22">
+          <button id="topo-view-local"    class="btn btn-sm btn-info" style="color:#000" onclick="topoSwitchView('local')">🏠 Local network</button>
+          <button id="topo-view-external" class="btn btn-sm btn-outline-secondary"       onclick="topoSwitchView('external')">🌐 External connections</button>
+          <div class="vr" style="height:22px;background:#444"></div>
+          <button id="topo-btn-arp" class="btn btn-sm btn-outline-secondary" onclick="topoToggleArp()">ARP Links ✓</button>
+          <div class="vr" style="height:22px;background:#444"></div>
+          <span class="small text-muted" id="topo-filter-label">Filter:</span>
+          <button class="btn btn-sm topo-type-btn" data-type="all"      style="background:#555;color:#fff;border:1px solid #777"                  onclick="topoFilterType(this)">All</button>
+          <button class="btn btn-sm topo-type-btn" data-type="gateway"  style="background:#198754;color:#fff;border:1px solid #198754;opacity:.45" onclick="topoFilterType(this)">Gateway</button>
+          <button class="btn btn-sm topo-type-btn" data-type="computer" style="background:#0d6efd;color:#fff;border:1px solid #0d6efd;opacity:.45" onclick="topoFilterType(this)">Computer</button>
+          <button class="btn btn-sm topo-type-btn" data-type="mobile"   style="background:#fd7e14;color:#fff;border:1px solid #fd7e14;opacity:.45" onclick="topoFilterType(this)">Mobile</button>
+          <button class="btn btn-sm topo-type-btn" data-type="iot"      style="background:#0dcaf0;color:#000;border:1px solid #0dcaf0;opacity:.45" onclick="topoFilterType(this)">IoT</button>
+          <button class="btn btn-sm topo-type-btn" data-type="printer"  style="background:#6f42c1;color:#fff;border:1px solid #6f42c1;opacity:.45" onclick="topoFilterType(this)">Printer</button>
+          <button class="btn btn-sm topo-type-btn" data-type="server"   style="background:#20c997;color:#000;border:1px solid #20c997;opacity:.45" onclick="topoFilterType(this)">Server</button>
+          <button class="btn btn-sm topo-type-btn" data-type="switch"   style="background:#6c757d;color:#fff;border:1px solid #6c757d;opacity:.45" onclick="topoFilterType(this)">Switch</button>
+          <div class="vr" style="height:22px;background:#444" id="topo-subnet-sep"></div>
+          <div id="topo-subnet-chips" class="d-flex flex-wrap gap-1"></div>
+          <input id="topo-search" type="search" class="form-control form-control-sm ms-auto"
+                 style="max-width:170px;background:#0d1117;border-color:#374151;color:#e5e7eb"
+                 placeholder="🔍 IP or subnet" oninput="topoSearch(this.value)" onsearch="topoSearch(this.value)">
+          <div class="small text-muted" id="topo-node-count"></div>
+        </div>
+
+        <div class="card-body p-0">
+          <div id="topology-graph" style="height:calc(100vh - 290px);min-height:520px;background:#0d1117;"></div>
+        </div>
+      </div>
+
+      {# Emit raw topology data — vis.Network is initialised after vis.js CDN loads #}
+      <script>
+      window._topoRaw = {
+        nodes:     {{ _t_nodes | tojson }},
+        edges:     {{ _t_edges | tojson }},
+        shadowIps: {{ _t_shadow | map(attribute='ip') | list | tojson }},
+        mitmIps:   {{ _t_disc.get('mac_flips', []) | map(attribute='ip') | list | tojson }},
+        summary:   {{ _t_summary | tojson }}
+      };
+      </script>
+      {% else %}
+      <div class="alert alert-info mt-2">
+        No topology data available — re-analyse a PCAP to generate the network map.
+      </div>
+      {% endif %}
+    </div>
+    <!-- /TOPOLOGY -->
+
+    <!-- ── THREAT GRAPH ─────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tab-threat-graph" role="tabpanel">
+
+      <div class="card shadow-sm mb-0" id="threat-graph-card" style="border-radius:.5rem;overflow:hidden">
+
+        <!-- Stats bar -->
+        <div class="d-flex flex-wrap align-items-center gap-3 px-3 py-2 border-bottom small fw-semibold" style="background:#0d1117;color:#94a3b8">
+          <span>🕸 Threat Intelligence Graph</span>
+          <span style="opacity:.35">│</span>
+          <span><b id="tg-node-count">—</b> nodes</span>
+          <span><b id="tg-edge-count">—</b> connections</span>
+          <span class="ms-auto" style="font-weight:400;opacity:.6;font-size:.78rem">
+            Click node to highlight connections &nbsp;·&nbsp; Double-click → IP profile / VirusTotal
+          </span>
+        </div>
+
+        <!-- Legend -->
+        <div class="d-flex flex-wrap align-items-center gap-1 px-3 py-2 border-bottom" style="background:#0f1117;font-size:.78rem">
+          <span class="badge me-1" style="background:#1d4ed8">💻 Internal IP</span>
+          <span class="badge me-1" style="background:#374151;border:1px solid #6b7280">🌍 External IP</span>
+          <span class="badge me-1" style="background:#b91c1c">⚠ Malicious IP</span>
+          <span class="badge me-1" style="background:#b45309">📡 Beaconing</span>
+          <span class="badge me-1" style="background:#065f46">🌐 Domain</span>
+          <span class="badge me-1" style="background:#78350f">🚨 Flagged Domain</span>
+          <span class="badge me-1" style="background:#7f1d1d;border:1px solid #f87171">◆ IOC</span>
+          <span class="ms-2 text-muted me-1" style="font-weight:400">Edges:</span>
+          <span style="color:#6b7280">⋯ DNS</span>
+          <span class="ms-2" style="color:#2563eb">── HTTP</span>
+          <span class="ms-2" style="color:#f59e0b">── Beacon</span>
+          <span class="ms-2" style="color:#7c3aed">── SMB</span>
+          <span class="ms-2" style="color:#ef4444">⋯ IOC</span>
+        </div>
+
+        <!-- Toolbar -->
+        <div class="d-flex flex-wrap align-items-center gap-2 px-3 py-2 border-bottom" style="background:#161b22">
+          <div class="btn-group btn-group-sm" role="group" aria-label="Node type filter">
+            <button class="btn btn-sm tg-type-btn active" data-type="all"      style="background:#555;color:#fff;border:1px solid #777">All</button>
+            <button class="btn btn-sm tg-type-btn"        data-type="ip"       style="background:transparent;color:#60a5fa;border:1px solid #2563eb">IPs</button>
+            <button class="btn btn-sm tg-type-btn"        data-type="domain"   style="background:transparent;color:#34d399;border:1px solid #065f46">Domains</button>
+            <button class="btn btn-sm tg-type-btn"        data-type="ioc"      style="background:transparent;color:#f87171;border:1px solid #b91c1c">IOCs</button>
+            <button class="btn btn-sm tg-type-btn"        data-type="beacon"   style="background:transparent;color:#fbbf24;border:1px solid #b45309">Beaconing</button>
+          </div>
+          <div class="vr" style="height:22px;background:#444"></div>
+          <select id="tg-layout" class="form-select form-select-sm" style="max-width:150px;background:#0d1117;border-color:#374151;color:#e5e7eb;font-size:.8rem">
+            <option value="force">Force-directed</option>
+            <option value="hierarchical">Hierarchical</option>
+          </select>
+          <button id="tg-reset-btn" class="btn btn-sm btn-outline-secondary" style="border-color:#374151;color:#94a3b8;font-size:.8rem">⟳ Reset</button>
+          <button id="tg-clear-sel" class="btn btn-sm btn-outline-secondary" style="border-color:#374151;color:#94a3b8;font-size:.8rem" disabled>✕ Clear</button>
+          <input id="tg-search" type="search" class="form-control form-control-sm ms-auto"
+                 style="max-width:210px;background:#0d1117;border-color:#374151;color:#e5e7eb"
+                 placeholder="🔍 IP, domain, IOC…">
+        </div>
+
+        <!-- Graph canvas + detail panel -->
+        <div class="d-flex" style="height:calc(100vh - 310px);min-height:480px">
+          <div id="threat-graph" style="flex:1;background:#0d1117;overflow:hidden;position:relative"></div>
+          <!-- Detail panel — hidden until node clicked -->
+          <div id="tg-detail-panel" style="width:270px;background:#0f1117;border-left:1px solid #1e2a3a;overflow-y:auto;flex-shrink:0;display:none">
+            <div class="d-flex align-items-center justify-content-between px-3 py-2 border-bottom" style="border-color:#1e2a3a!important;position:sticky;top:0;background:#0f1117;z-index:2">
+              <code class="fw-semibold text-white" id="tg-panel-title" style="font-size:.82rem;word-break:break-all"></code>
+              <button class="btn-close btn-close-white" id="tg-panel-close" style="font-size:.65rem;flex-shrink:0;margin-left:6px"></button>
+            </div>
+            <div id="tg-panel-body" class="px-3 py-2 small"></div>
+          </div>
+        </div>
+
+      </div><!-- /.card -->
+
+      <div id="tg-empty" class="alert alert-info mt-3 d-none">
+        No graph data — upload a PCAP capture to generate the threat graph.
+      </div>
+
+    </div>
+    <!-- /THREAT GRAPH -->
+
+    <!-- ── HISTORY ────────────────────────────────────────────────── -->
+    <div class="tab-pane fade" id="tab-history" role="tabpanel">
+
+      <!-- Populated by initHistoryTab() in report.js on first tab open -->
+      <div id="historyLoading" class="text-center py-5 text-muted">
+        <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+        Loading history…
+      </div>
+
+      <div id="historyContent" class="d-none">
+        <div class="card shadow-sm">
+          <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+            Past analyses
+            <small class="text-muted fw-normal">Click Delete to remove a record and its files</small>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0" id="historyTable">
+              <thead class="table-light">
+                <tr>
+                  <th>File</th>
+                  <th>Completed</th>
+                  <th class="text-danger text-center">Crit</th>
+                  <th class="text-center" style="color:#fd7e14">High</th>
+                  <th class="text-warning text-center">Med</th>
+                  <th class="text-info text-center">Info</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="historyTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div id="historyEmpty" class="d-none">
+        <div class="alert alert-info shadow-sm">
+          No past analyses recorded yet. Once you analyse a PCAP the record will appear here.
+        </div>
+      </div>
+    </div>
+    <!-- /HISTORY -->
+
+  </div><!-- /.tab-content -->
+</div><!-- /.container-fluid -->
+
+
+<!-- ── Chart data injected from Jinja2 ───────────────────────── -->
+<script>
+window.CHART_DATA = {
+  proto: {
+    labels: ['TCP', 'UDP', 'ICMP'],
+    values: [{{ results.meta.tcp_packets }}, {{ results.meta.udp_packets }}, {{ results.meta.icmp_packets }}]
+  },
+  topSenders: {{ (results.hosts.hosts | sort(attribute='packets_sent', reverse=True))[:5] | tojson }},
+  timeline: {{ (results.meta.get('packet_timeline') or {"labels":[],"values":[],"step_s":1}) | tojson }},
+  geomap: {{ (results.get('geo_summary') or {}) | tojson }}
+};
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-chart-geo@4.3.0/build/index.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<script>
+// ── Network Topology — Wavenet-style subnet bubble map ───────────────────────
+(function () {
+  if (!window._topoRaw) return;
+  const { nodes: rawNodes, edges: rawEdges, shadowIps: shadowArr,
+          mitmIps: mitmArr, summary } = window._topoRaw;
+  const shadowIps = new Set(shadowArr);
+  const mitmIpSet = new Set(mitmArr || []);
+
+  // ── Style tables ─────────────────────────────────────────────────────────
+  const NODE_STYLES = {
+    gateway:  { color:{background:'#198754',border:'#0f5132',highlight:{background:'#28a745',border:'#0f5132'}}, shape:'star',     font:{color:'#fff',size:12,bold:true}, size:36 },
+    computer: { color:{background:'#0d6efd',border:'#0a58ca',highlight:{background:'#3d8bfd',border:'#0a58ca'}}, shape:'box',      font:{color:'#fff',size:10}, size:20 },
+    mobile:   { color:{background:'#fd7e14',border:'#ca6510',highlight:{background:'#feb272',border:'#ca6510'}}, shape:'diamond',  font:{color:'#fff',size:10}, size:18 },
+    iot:      { color:{background:'#0dcaf0',border:'#0aa2c0',highlight:{background:'#3dd5f3',border:'#0aa2c0'}}, shape:'hexagon',  font:{color:'#000',size:10}, size:20 },
+    printer:  { color:{background:'#6f42c1',border:'#59359a',highlight:{background:'#8c68cd',border:'#59359a'}}, shape:'triangle', font:{color:'#fff',size:10}, size:18 },
+    server:   { color:{background:'#20c997',border:'#1aa179',highlight:{background:'#48d8b4',border:'#1aa179'}}, shape:'ellipse',  font:{color:'#000',size:10}, size:20 },
+    switch:   { color:{background:'#6c757d',border:'#495057',highlight:{background:'#868e96',border:'#495057'}}, shape:'square',   font:{color:'#fff',size:10}, size:18 },
+    external: { color:{background:'#1e293b',border:'#475569',highlight:{background:'#334155',border:'#94a3b8'}}, shape:'dot',      font:{color:'#94a3b8',size:9}, size:13 },
+    unknown:  { color:{background:'#374151',border:'#1f2937',highlight:{background:'#4b5563',border:'#1f2937'}}, shape:'circle',   font:{color:'#d1d5db',size:10}, size:16 },
+  };
+  const EDGE_STYLES = {
+    arp:   { color:{color:'#4b5563',opacity:0.45}, dashes:[4,3], width:1   },
+    http:  { color:{color:'#3b82f6',opacity:0.85}, dashes:false, width:1.5 },
+    https: { color:{color:'#10b981',opacity:0.85}, dashes:false, width:1.5 },
+    lldp:  { color:{color:'#f59e0b',opacity:0.8},  dashes:[5,2], width:1.5 },
+  };
+
+  // ── Build styled node helper ──────────────────────────────────────────────
+  function styleNode(n, extraPos) {
+    const style    = NODE_STYLES[n.type] || NODE_STYLES.unknown;
+    const isShadow = shadowIps.has(n.id);
+    const isDns    = !!n.is_dns_server;
+    const isDhcp   = !!n.is_dhcp_server;
+    const isDc     = !!n.is_dc_candidate;
+
+    // Border / glow overrides (priority: MITM > shadow > DC > DNS+DHCP > DNS > DHCP)
+    const isMitm = mitmIpSet.has(n.id);
+    let overrides = {};
+    if (isMitm) {
+      overrides = { borderWidth:4,
+        color:{ ...style.color, border:'#ef4444', highlight:{border:'#ff6b6b',background:style.color.background} },
+        shadow:{ enabled:true, color:'rgba(239,68,68,0.75)', size:18, x:0, y:0 }};
+    } else if (isShadow) {
+      overrides = { borderWidth:3,
+        color:{ ...style.color, border:'#f97316', highlight:{border:'#f97316',background:style.color.background} },
+        shadow:{ enabled:true, color:'rgba(249,115,22,0.6)', size:14, x:0, y:0 }};
+    } else if (isDc) {
+      overrides = { borderWidth:3,
+        color:{ ...style.color, border:'#a855f7', highlight:{border:'#a855f7',background:style.color.background} },
+        shadow:{ enabled:true, color:'rgba(168,85,247,0.45)', size:10, x:0, y:0 }};
+    } else if (isDns && isDhcp) {
+      overrides = { borderWidth:3,
+        color:{ ...style.color, border:'#ff9500', highlight:{border:'#ff9500',background:style.color.background} },
+        shadow:{ enabled:true, color:'rgba(255,149,0,0.45)', size:10, x:0, y:0 }};
+    } else if (isDns) {
+      overrides = { borderWidth:3,
+        color:{ ...style.color, border:'#00bcd4', highlight:{border:'#00bcd4',background:style.color.background} },
+        shadow:{ enabled:true, color:'rgba(0,188,212,0.45)', size:10, x:0, y:0 }};
+    } else if (isDhcp) {
+      overrides = { borderWidth:3,
+        color:{ ...style.color, border:'#ff9500', highlight:{border:'#ff9500',background:style.color.background} },
+        shadow:{ enabled:true, color:'rgba(255,149,0,0.45)', size:10, x:0, y:0 }};
+    }
+
+    // Traffic-scaled size (gateway is always large)
+    const baseSize = style.size;
+    const pkt      = n.packet_count || 0;
+    const scaledSz = n.type === 'gateway'
+      ? baseSize
+      : Math.round(baseSize * Math.min(1.8, 1 + Math.log(pkt + 1) / 9));
+
+    // Dimmed opacity for ARP-only unfingerprinted nodes
+    const opacityOverride = (n.fingerprinted === false && n.type !== 'external' && n.type !== 'gateway')
+      ? { opacity: 0.65 } : {};
+
+    // Rich HTML tooltip
+    const lookupTarget = n.type === 'external' ? n.id.replace(/^ext:/, '') : n.id;
+    const isIp   = /^\d{1,3}(\.\d{1,3}){3}$/.test(lookupTarget);
+    const vtUrl  = `https://www.virustotal.com/gui/${isIp ? 'ip-address' : 'domain'}/${lookupTarget}`;
+    const links  = [
+      `<a href="${vtUrl}" target="_blank" rel="noopener" style="color:#58a6ff">VirusTotal ↗</a>`,
+      isIp ? `<a href="https://www.abuseipdb.com/check/${lookupTarget}" target="_blank" rel="noopener" style="color:#58a6ff">AbuseIPDB ↗</a>` : null,
+      isIp ? `<a href="https://www.shodan.io/host/${lookupTarget}" target="_blank" rel="noopener" style="color:#58a6ff">Shodan ↗</a>` : null,
+    ].filter(Boolean).join('&nbsp;&nbsp;');
+    const baseText = (n.tooltip || `Type: ${n.type}`).replace(/\n/g, '<br>');
+    const tipEl = document.createElement('div');
+    tipEl.style.cssText = 'background:#1e1e2e;color:#cdd6f4;border:1px solid #414868;border-radius:6px;padding:8px 10px;font-size:12px;max-width:290px;line-height:1.55';
+    tipEl.innerHTML = `<strong style="color:#89b4fa;font-size:13px">${lookupTarget}</strong><br>${baseText}<br><br>${links}`;
+
+    return {
+      id:    n.id,
+      label: n.label,
+      title: tipEl,
+      _type: n.type,
+      _pkt:  pkt,
+      size:  scaledSz,
+      ...style,
+      ...overrides,
+      ...opacityOverride,
+      ...(extraPos || {}),
+    };
+  }
+
+  // ── Layout calculators ────────────────────────────────────────────────────
+
+  // Arc assignments for the hub-and-spoke ring (start°, end°)
+  const TYPE_ARCS = {
+    computer: [315, 45],
+    server:   [45,  110],
+    mobile:   [110, 170],
+    iot:      [170, 250],
+    printer:  [250, 315],
+  };
+
+  function computeLocalLayout(nodes, edges, typeFilter) {
+    const internals = nodes.filter(n => n._type !== 'external');
+    const gw        = internals.find(n => n._type === 'gateway');
+    const others    = internals.filter(n => n._type !== 'gateway');
+
+    // Apply category filter
+    const filtered = typeFilter === 'all'
+      ? internals
+      : internals.filter(n => n._type === typeFilter || n._type === 'gateway');
+
+    const otherFiltered = filtered.filter(n => n._type !== 'gateway');
+    const radius = 190 + Math.floor(otherFiltered.length / 6) * 35;
+
+    // Group by arc type; unknowns and switches fill remaining gaps
+    const arcBuckets = {};
+    Object.keys(TYPE_ARCS).forEach(t => arcBuckets[t] = []);
+    const remainder  = [];
+    otherFiltered.forEach(n => {
+      if (TYPE_ARCS[n._type]) arcBuckets[n._type].push(n);
+      else remainder.push(n);
+    });
+
+    // Place remainder nodes in gaps between defined arcs
+    const arcList  = Object.entries(TYPE_ARCS); // [[type,[s,e]], ...]
+    const gapStart = 250; const gapEnd = 315;   // re-use printer arc gap for unknowns
+    const gapStep  = remainder.length > 0 ? (gapEnd - gapStart) / (remainder.length + 1) : 0;
+
+    const positioned = [];
+    if (gw) positioned.push({ ...gw, x: 0, y: 0, fixed: { x:true, y:true } });
+
+    // Place arc buckets
+    arcList.forEach(([type, [s, e]]) => {
+      const bucket = arcBuckets[type];
+      if (!bucket.length) return;
+      const step   = (e > s ? e - s : 360 - s + e) / (bucket.length + 1);
+      bucket.forEach((n, i) => {
+        const deg = (s + step * (i + 1)) % 360;
+        const rad = (deg - 90) * Math.PI / 180;   // -90 so 0° is top
+        positioned.push({ ...n, x: Math.round(radius * Math.cos(rad)), y: Math.round(radius * Math.sin(rad)) });
+      });
+    });
+
+    // Place remainder in a spare arc (top-left quadrant)
+    remainder.forEach((n, i) => {
+      const deg = (200 + gapStep * (i + 1)) % 360;
+      const rad = (deg - 90) * Math.PI / 180;
+      positioned.push({ ...n, x: Math.round(radius * Math.cos(rad)), y: Math.round(radius * Math.sin(rad)) });
+    });
+
+    // Only ARP/LLDP edges between internal nodes
+    const nodeIds = new Set(positioned.map(n => n.id));
+    const filteredEdges = edges.filter(e =>
+      (e.proto === 'arp' || e.proto === 'lldp') &&
+      nodeIds.has(e.from) && nodeIds.has(e.to)
+    );
+
+    return { nodes: positioned, edges: filteredEdges, radius };
+  }
+
+  function computeExternalLayout(nodes, edges) {
+    // All outbound HTTP/HTTPS edges
+    const extEdges   = edges.filter(e => e.proto === 'http' || e.proto === 'https');
+    const extNodeIds = new Set(extEdges.map(e => e.to));
+    const srcIds     = new Set(extEdges.map(e => e.from));
+
+    // All internal nodes — those with outbound connections are highlighted, others dimmed
+    const internals = nodes.filter(n => n._type !== 'external');
+
+    // Group internals by /24 subnet for organised column on the left
+    const subnetMap = {};
+    internals.forEach(n => {
+      const raw = rawNodes.find(r => r.id === n.id) || {};
+      const sub = (raw.subnet && raw.subnet !== 'external' && raw.subnet !== 'unknown')
+                  ? raw.subnet : '(other)';
+      if (!subnetMap[sub]) subnetMap[sub] = [];
+      subnetMap[sub].push({ n, active: srcIds.has(n.id) });
+    });
+
+    // External nodes sorted by connection count (most-contacted at top)
+    const extNodes = nodes
+      .filter(n => n._type === 'external' && extNodeIds.has(n.id))
+      .sort((a, b) => {
+        const ra = rawNodes.find(r => r.id === a.id) || {};
+        const rb = rawNodes.find(r => r.id === b.id) || {};
+        return (rb.connection_count || 0) - (ra.connection_count || 0);
+      });
+
+    const leftX  = -440;
+    const rightX =  440;
+    const nodeGap   = 52;   // vertical spacing per internal node
+    const subnetGap = 22;   // extra gap between subnets
+
+    // Lay out internal column (left), ordered by subnet
+    const intPositioned = [];
+    let y = 0;
+    const subnetKeys = Object.keys(subnetMap).sort();
+    subnetKeys.forEach(sub => {
+      subnetMap[sub].forEach(({ n, active }) => {
+        intPositioned.push({ ...n, x: leftX, y, _extActive: active });
+        y += nodeGap;
+      });
+      y += subnetGap;
+    });
+    // Centre column vertically
+    const totalH = y - subnetGap;
+    intPositioned.forEach(n => { n.y -= totalH / 2; });
+
+    // Lay out external column (right)
+    const extYStep = Math.max(40, Math.min(72, 580 / Math.max(extNodes.length, 1)));
+    const extPositioned = extNodes.map((n, i) => ({
+      ...n, x: rightX, y: (i - (extNodes.length - 1) / 2) * extYStep,
+    }));
+
+    const allNodes = [...intPositioned, ...extPositioned];
+    const nodeIds  = new Set(allNodes.map(n => n.id));
+    const filteredEdges = extEdges.filter(e => nodeIds.has(e.from) && nodeIds.has(e.to));
+
+    return { nodes: allNodes, edges: filteredEdges, srcIds };
+  }
+
+  // ── Build master styled nodes/edges arrays (positions added per view) ─────
+  function buildStyledNodes(rawPositioned) {
+    return rawPositioned.map(n => {
+      const raw = rawNodes.find(r => r.id === n.id) || n;
+      const styled = styleNode(raw, { x: n.x, y: n.y, fixed: n.fixed });
+      return styled;
+    });
+  }
+  function buildStyledEdges(rawFiltered) {
+    return rawFiltered.map((e, i) => {
+      const style = EDGE_STYLES[e.proto] || EDGE_STYLES.arp;
+      return {
+        id: `e${i}`, from: e.from, to: e.to, label: e.label || '',
+        _proto: e.proto,
+        font:   { size:8, color:'#9ca3af', align:'middle' },
+        arrows: { to:{ enabled: e.proto !== 'arp' && e.proto !== 'lldp', scaleFactor:0.5 } },
+        smooth: { type:'curvedCW', roundness:0.15 },
+        ...style
+      };
+    });
+  }
+
+  // ── Subnet seeding helper — place nodes near their /24 centroid ─────────
+  function seedSubnetPositions(styledNodes) {
+    const subnets = [...new Set(rawNodes.map(n => n.subnet).filter(s => s && s !== 'external' && s !== 'unknown'))];
+    const centers = {};
+    subnets.forEach((s, i) => {
+      const angle = (i / Math.max(subnets.length, 1)) * 2 * Math.PI;
+      centers[s] = { x: Math.cos(angle) * 380, y: Math.sin(angle) * 280 };
+    });
+    return styledNodes.map(n => {
+      const raw    = rawNodes.find(r => r.id === n.id) || {};
+      const sub    = raw.subnet;
+      const center = centers[sub] || { x: 0, y: 0 };
+      return { ...n, x: center.x + (Math.random() - 0.5) * 90, y: center.y + (Math.random() - 0.5) * 90 };
+    });
+  }
+
+  // ── Subnet bubble drawing ─────────────────────────────────────────────────
+  function drawSubnetBubbles(ctx) {
+    if (currentView !== 'local') return;
+    const positions = network.getPositions();
+    // Group visible node positions by subnet
+    const groups = {};
+    Object.entries(positions).forEach(([id, pos]) => {
+      const raw = rawNodes.find(n => n.id === id);
+      const sub = raw && raw.subnet && raw.subnet !== 'external' && raw.subnet !== 'unknown' ? raw.subnet : null;
+      if (!sub) return;
+      if (!groups[sub]) groups[sub] = [];
+      groups[sub].push(pos);
+    });
+    Object.entries(groups).forEach(([subnet, pts]) => {
+      if (!pts.length) return;
+      const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+      const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+      const r  = Math.max(65, Math.max(...pts.map(p => Math.hypot(p.x - cx, p.y - cy))) + 50);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+      ctx.fillStyle   = 'rgba(79,70,229,0.05)';
+      ctx.strokeStyle = 'rgba(148,163,184,0.22)';
+      ctx.lineWidth   = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.fill();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Label at top-left of bubble
+      ctx.font      = 'bold 10px monospace';
+      ctx.fillStyle = 'rgba(148,163,184,0.65)';
+      ctx.fillText(subnet, cx - r + 8, cy - r + 13);
+      ctx.restore();
+    });
+  }
+
+  // ── vis.js DataSets + Network ─────────────────────────────────────────────
+  const nodeDS = new vis.DataSet([]);
+  const edgeDS = new vis.DataSet([]);
+
+  const container = document.getElementById('topology-graph');
+  const network   = new vis.Network(
+    container,
+    { nodes: nodeDS, edges: edgeDS },
+    {
+      layout:  { randomSeed: 42 },
+      physics: {
+        enabled: true,
+        solver: 'forceAtlas2Based',
+        forceAtlas2Based: {
+          gravitationalConstant: -35,
+          centralGravity:         0.004,
+          springLength:           110,
+          springConstant:         0.07,
+          damping:                0.55,
+          avoidOverlap:           0.9,
+        },
+        stabilization: { iterations: 250, updateInterval: 30, fit: true },
+      },
+      interaction: {
+        hover: true, tooltipDelay:120,
+        navigationButtons: true, keyboard: true, zoomView: true,
+      },
+      nodes: { borderWidth:1, shadow:false },
+      edges: { smooth:{ type:'curvedCW', roundness:0.15 } },
+    }
+  );
+
+  // Draw subnet bubbles on every frame
+  network.on('beforeDrawing', drawSubnetBubbles);
+
+  // Disable physics after stabilisation to avoid jitter
+  network.once('stabilizationIterationsDone', () => {
+    network.setOptions({ physics: { enabled: false } });
+    network.fit({ animation:{ duration:500, easingFunction:'easeInOutQuad' } });
+  });
+
+  // Redraw correctly when the Topology tab is shown (vis.js needs visible container to size)
+  const _topoTabBtn = document.querySelector('[data-bs-target="#tab-topology"]');
+  if (_topoTabBtn) {
+    let _topoInitialized = false;
+    _topoTabBtn.addEventListener('shown.bs.tab', () => {
+      network.redraw();
+      if (!_topoInitialized) {
+        _topoInitialized = true;
+        network.fit({ animation:{ duration:400, easingFunction:'easeInOutQuad' } });
+      }
+    });
+  }
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  let currentView  = 'local';
+  let showArp      = true;
+  let typeFilter   = 'all';
+  const hasExternal = rawEdges.some(e => e.proto === 'http' || e.proto === 'https');
+
+  // Disable external button if no external connections
+  if (!hasExternal) {
+    const btn = document.getElementById('topo-view-external');
+    if (btn) { btn.disabled = true; btn.title = 'No external connections in this capture'; }
+  }
+
+  // ── Populate stats bar ────────────────────────────────────────────────────
+  if (summary) {
+    const s = summary;
+    ['critical_count','shadow_iot_count','gateway_count','total_internal','subnet_count'].forEach(k => {
+      const id = { critical_count:'s-critical', shadow_iot_count:'s-shadow',
+                   gateway_count:'s-gateway', total_internal:'s-hosts', subnet_count:'s-subnets' }[k];
+      const el = document.getElementById(id);
+      if (el) el.textContent = s[k] || 0;
+    });
+  }
+
+  // ── Populate subnet chips ─────────────────────────────────────────────────
+  const subnetList = [...new Set(rawNodes.map(n => n.subnet).filter(s => s && s !== 'external' && s !== 'unknown'))].sort();
+  const chipWrap   = document.getElementById('topo-subnet-chips');
+  const sepEl      = document.getElementById('topo-subnet-sep');
+  if (chipWrap && subnetList.length) {
+    subnetList.forEach(s => {
+      const chip = document.createElement('button');
+      chip.className = 'btn btn-sm btn-outline-secondary';
+      chip.style.cssText = 'font-size:10px;padding:1px 7px;font-family:monospace;letter-spacing:.3px';
+      chip.textContent = s;
+      chip.onclick = () => { document.getElementById('topo-search').value = s; topoSearch(s); };
+      chipWrap.appendChild(chip);
+    });
+  } else {
+    if (sepEl)   sepEl.style.display   = 'none';
+    if (chipWrap) chipWrap.style.display = 'none';
+  }
+
+  // ── Load a view ───────────────────────────────────────────────────────────
+  function loadView(view) {
+    currentView = view;
+    const isLocal = view === 'local';
+
+    // Re-enable physics for local view (subnet clustering on reload)
+    if (isLocal) {
+      network.setOptions({ physics: { enabled: true } });
+    } else {
+      network.setOptions({ physics: { enabled: false } });
+    }
+
+    let posNodes, posEdges;
+    if (isLocal) {
+      const allStyled = rawNodes
+        .filter(n => n.type !== 'external')
+        .filter(n => typeFilter === 'all' || n.type === typeFilter || n.type === 'gateway')
+        .map(n => styleNode(n));
+      const seeded = seedSubnetPositions(allStyled);
+      posNodes = seeded;
+
+      const nodeIds = new Set(seeded.map(n => n.id));
+      let localEdges = rawEdges.filter(e =>
+        (e.proto === 'arp' || e.proto === 'lldp') &&
+        nodeIds.has(e.from) && nodeIds.has(e.to)
+      );
+      if (!showArp) localEdges = [];
+      posEdges = buildStyledEdges(localEdges);
+    } else {
+      const allStyled = rawNodes.map(n => ({ ...styleNode(n), _type: n.type }));
+      const extLayout = computeExternalLayout(allStyled, rawEdges);
+      posNodes = buildStyledNodes(extLayout.nodes);
+      // Dim internal nodes that have no outbound external connection
+      if (extLayout.srcIds) {
+        posNodes = posNodes.map(n => {
+          const raw = rawNodes.find(r => r.id === n.id) || {};
+          if (raw.type !== 'external' && !extLayout.srcIds.has(n.id)) {
+            return { ...n, opacity: 0.25 };
+          }
+          return n;
+        });
+      }
+      posEdges = buildStyledEdges(extLayout.edges);
+    }
+
+    nodeDS.clear(); edgeDS.clear();
+    nodeDS.add(posNodes);
+    edgeDS.add(posEdges);
+    if (!isLocal) {
+      network.fit({ animation:{ duration:400, easingFunction:'easeInOutQuad' } });
+    }
+    updateCount(posNodes.length);
+
+    // Toggle toolbar controls for view
+    const arpBtn     = document.getElementById('topo-btn-arp');
+    const filterLbl  = document.getElementById('topo-filter-label');
+    const typeBtns   = document.querySelectorAll('.topo-type-btn');
+    const subChips   = document.getElementById('topo-subnet-chips');
+    const subSep     = document.getElementById('topo-subnet-sep');
+    if (arpBtn)    arpBtn.style.display    = isLocal ? '' : 'none';
+    if (filterLbl) filterLbl.style.display = isLocal ? '' : 'none';
+    typeBtns.forEach(b => b.style.display  = isLocal ? '' : 'none');
+    if (subChips && subnetList.length) subChips.style.display = isLocal ? '' : 'none';
+    if (subSep   && subnetList.length) subSep.style.display   = isLocal ? '' : 'none';
+
+    // Highlight active view button
+    ['local','external'].forEach(v => {
+      const b = document.getElementById(`topo-view-${v}`);
+      if (!b) return;
+      if (v === view) { b.className = 'btn btn-sm btn-info'; b.style.color = '#000'; }
+      else            { b.className = 'btn btn-sm btn-outline-secondary'; b.style.color = ''; }
+    });
+  }
+
+  // Initial load
+  loadView('local');
+
+  // ── Interactions ──────────────────────────────────────────────────────────
+  network.on('doubleClick', function (params) {
+    if (!params.nodes.length) return;
+    const nodeId = params.nodes[0];
+    const raw    = rawNodes.find(n => n.id === nodeId);
+    if (!raw) return;
+    const target = raw.type === 'external' ? nodeId.replace(/^ext:/, '') : nodeId;
+    const isIp   = /^\d{1,3}(\.\d{1,3}){3}$/.test(target);
+    window.open(`https://www.virustotal.com/gui/${isIp ? 'ip-address' : 'domain'}/${target}`, '_blank', 'noopener');
+  });
+
+  network.on('selectNode', function (params) {
+    const hint = document.getElementById('topo-node-count');
+    if (!hint || !params.nodes.length) return;
+    const nodeId = params.nodes[0];
+    const raw    = rawNodes.find(n => n.id === nodeId);
+    const target = raw ? (raw.type === 'external' ? nodeId.replace(/^ext:/, '') : nodeId) : nodeId;
+    hint.innerHTML = `<span style="color:#58a6ff">Selected: ${target} — double-click → VirusTotal</span>`;
+  });
+  network.on('deselectNode', () => updateCount(nodeDS.length));
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function updateCount(n) {
+    const el = document.getElementById('topo-node-count');
+    if (el) el.textContent = `${n} nodes`;
+  }
+
+  // ── Search ────────────────────────────────────────────────────────────────
+  window.topoSearch = function (query) {
+    query = query.trim().toLowerCase();
+    if (!query) {
+      nodeDS.forEach(n => nodeDS.update({ id: n.id, opacity: 1 }));
+      return;
+    }
+    const matchIds = new Set(
+      rawNodes
+        .filter(n => n.id.toLowerCase().includes(query) ||
+                     (n.subnet || '').toLowerCase().includes(query) ||
+                     (n.label  || '').toLowerCase().includes(query))
+        .map(n => n.id)
+    );
+    nodeDS.forEach(n => nodeDS.update({ id: n.id, opacity: matchIds.has(n.id) ? 1 : 0.12 }));
+    if (matchIds.size) network.fit({ nodes: [...matchIds], animation:{ duration:350, easingFunction:'easeInOutQuad' } });
+  };
+
+  // ── Exposed handlers ──────────────────────────────────────────────────────
+  window.topoSwitchView = function (view) { loadView(view); };
+
+  window.topoToggleArp = function () {
+    showArp = !showArp;
+    const btn = document.getElementById('topo-btn-arp');
+    if (btn) btn.textContent = showArp ? 'ARP Links ✓' : 'ARP Links ✗';
+    if (currentView === 'local') loadView('local');
+  };
+
+  window.topoFilterType = function (btn) {
+    typeFilter = btn.dataset.type;
+    document.querySelectorAll('.topo-type-btn').forEach(b => {
+      b.style.opacity    = b === btn ? '1'    : '.45';
+      b.style.boxShadow  = b === btn ? '0 0 0 2px #fff4' : '';
+    });
+    if (currentView === 'local') loadView('local');
+  };
+})();
+</script>
+<script>
+/* Embed full results for client-side IP profile modal and global search */
+window.REPORT_DATA = {
+  hosts:     {{ results.hosts.hosts      | tojson }},
+  dns:       {{ results.dns.queries      | tojson }},
+  http:      {{ results.http.requests    | tojson }},
+  iocs:      {{ results.iocs.iocs        | tojson }},
+  smb:       {{ results.smb.pairs        | tojson }},
+  beaconing: {{ results.beaconing.candidates | tojson }},
+  domainMap: {{ results.dns.domain_ip_map | tojson }}
+};
+</script>
+<script src="{{ url_for('static', filename='js/report.js') }}"></script>
+
+<!-- ── IP Profile Modal ──────────────────────────────────────── -->
+<div class="modal fade" id="ip-profile-modal" tabindex="-1" aria-labelledby="ip-modal-label" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="ip-modal-label">
+          IP Profile — <code id="ip-modal-addr" class="fs-5"></code>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body p-0" id="ip-modal-body">
+        <!-- populated by initIpModal() in report.js -->
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

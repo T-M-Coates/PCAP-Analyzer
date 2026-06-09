@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en" data-bs-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PCAP Analyzer</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+</head>
+<body class="bg-light">
+
+<div class="container py-5">
+  <div class="row justify-content-center">
+    <div class="col-lg-7">
+
+      <div class="text-center mb-4">
+        <h1 class="fw-bold">PCAP Analyzer</h1>
+        <p class="text-muted">Upload a <code>.pcap</code> or <code>.pcapng</code> capture file to generate a local threat analysis report. No data leaves your machine.</p>
+      </div>
+
+      <!-- Drop zone -->
+      <div id="drop-zone" class="drop-zone rounded-3 p-5 text-center mb-3">
+        <div id="drop-idle">
+          <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="bi bi-file-earmark-arrow-up text-secondary mb-3" viewBox="0 0 16 16">
+            <path d="M8.5 11.5a.5.5 0 0 1-1 0V7.707L6.354 8.854a.5.5 0 1 1-.708-.708l2-2a.5.5 0 0 1 .708 0l2 2a.5.5 0 0 1-.708.708L8.5 7.707z"/>
+            <path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2M9.5 3A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5z"/>
+          </svg>
+          <p class="mb-1 fw-semibold">Drag &amp; drop your <code>.pcap</code> or <code>.pcapng</code> file here</p>
+          <p class="text-muted small mb-3">or click to browse (max 5 GB)</p>
+          <input type="file" id="file-input" accept=".pcap,.pcapng" class="d-none">
+          <button class="btn btn-outline-secondary btn-sm" onclick="document.getElementById('file-input').click()">Browse…</button>
+        </div>
+        <div id="drop-selected" class="d-none">
+          <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" fill="currentColor" class="bi bi-file-earmark-check text-success mb-2" viewBox="0 0 16 16">
+            <path d="M10.854 7.854a.5.5 0 0 0-.708-.708L7.5 9.793 6.354 8.646a.5.5 0 1 0-.708.708l1.5 1.5a.5.5 0 0 0 .708 0z"/>
+            <path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2M9.5 3A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5z"/>
+          </svg>
+          <p class="mb-0 fw-semibold" id="file-name-display"></p>
+          <p class="text-muted small" id="file-size-display"></p>
+        </div>
+      </div>
+
+      <!-- Upload progress bar (hidden until upload starts) -->
+      <div id="upload-progress-wrap" class="d-none mb-3">
+        <div class="d-flex justify-content-between small mb-1">
+          <span id="progress-label">Uploading…</span>
+          <span id="progress-pct">0%</span>
+        </div>
+        <div class="progress">
+          <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- Status message (hidden until analysis starts) -->
+      <div id="status-wrap" class="d-none mb-3">
+        <div class="alert alert-info d-flex align-items-center gap-2 mb-0">
+          <div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading…</span></div>
+          <span id="status-message">Analysing…</span>
+        </div>
+      </div>
+
+      <!-- Error message -->
+      <div id="error-wrap" class="d-none mb-3">
+        <div class="alert alert-danger mb-0" id="error-message"></div>
+      </div>
+
+      <div class="d-grid">
+        <button id="analyze-btn" class="btn btn-primary btn-lg" disabled>Analyze</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Recent analyses -->
+  <div class="row justify-content-center mt-4">
+    <div class="col-lg-7">
+      <div id="recent-loading" class="text-center text-muted small py-2 d-none">
+        <span class="spinner-border spinner-border-sm me-1"></span> Loading recent analyses…
+      </div>
+      <div id="recent-section" class="d-none">
+        <div class="card shadow-sm">
+          <div class="card-header d-flex align-items-center justify-content-between py-2">
+            <span class="fw-semibold small">Recent Analyses</span>
+            <span class="text-muted small" id="recent-count"></span>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0 align-middle">
+              <thead class="table-light">
+                <tr>
+                  <th class="ps-3">File</th>
+                  <th>Analysed</th>
+                  <th class="text-center text-danger">Crit</th>
+                  <th class="text-center" style="color:#fd7e14">High</th>
+                  <th class="text-center text-warning">Med</th>
+                  <th class="text-center text-info">Info</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="recent-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div id="recent-empty" class="d-none text-center text-muted small py-2">
+        No analyses yet — upload a capture to get started.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var loading = document.getElementById('recent-loading');
+  var section = document.getElementById('recent-section');
+  var empty   = document.getElementById('recent-empty');
+  var count   = document.getElementById('recent-count');
+  var tbody   = document.getElementById('recent-tbody');
+
+  function esc(s) {
+    return String(s || '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function sevBadge(n, cls) {
+    return n > 0
+      ? '<span class="badge bg-' + cls + (cls === 'warning' ? ' text-dark' : '') + '">' + n + '</span>'
+      : '<span class="text-muted">—</span>';
+  }
+
+  loading.classList.remove('d-none');
+
+  fetch('/history')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      loading.classList.add('d-none');
+      if (!data || !data.length) { empty.classList.remove('d-none'); return; }
+
+      count.textContent = data.length + ' capture' + (data.length !== 1 ? 's' : '');
+
+      data.forEach(function(a) {
+        var completed = (a.completed_at || '').replace('T',' ').substring(0, 16);
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td class="ps-3 small fw-semibold text-truncate" style="max-width:180px" title="' + esc(a.filename) + '">' + esc(a.filename) + '</td>' +
+          '<td class="small text-muted text-nowrap">' + esc(completed) + '</td>' +
+          '<td class="text-center">' + sevBadge(a.critical_count || 0, 'danger')  + '</td>' +
+          '<td class="text-center">' + sevBadge(a.high_count    || 0, 'high')    + '</td>' +
+          '<td class="text-center">' + sevBadge(a.medium_count  || 0, 'warning') + '</td>' +
+          '<td class="text-center">' + sevBadge(a.info_count    || 0, 'info')    + '</td>' +
+          '<td class="pe-3 text-end text-nowrap">' +
+            '<a href="/report/' + esc(a.job_id) + '" class="btn btn-sm btn-outline-secondary py-0 me-1">Open</a>' +
+            '<button class="btn btn-sm btn-outline-danger py-0" data-job="' + esc(a.job_id) + '">×</button>' +
+          '</td>';
+        tbody.appendChild(tr);
+      });
+
+      tbody.addEventListener('click', function(e) {
+        var btn = e.target.closest('[data-job]');
+        if (!btn) return;
+        if (!confirm('Delete this analysis and its files?')) return;
+        fetch('/analysis/' + btn.dataset.job, { method: 'DELETE' })
+          .then(function() {
+            var row = btn.closest('tr');
+            if (row) row.remove();
+            if (!tbody.querySelector('tr')) {
+              section.classList.add('d-none');
+              empty.classList.remove('d-none');
+            }
+          })
+          .catch(function() { alert('Delete failed.'); });
+      });
+
+      section.classList.remove('d-none');
+    })
+    .catch(function() { loading.classList.add('d-none'); });
+})();
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/upload.js') }}"></script>
+</body>
+</html>
